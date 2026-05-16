@@ -43,11 +43,11 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ✅ Done | `eb2c9aa` |
 | 6 | Dockerfile (single image for backend + worker + beat) | ✅ Done | `7e6bc52` |
 | 7 | Docker Compose + monitoring configs | ✅ Done | `20f06af` |
-| 8 | Makefile | ⬜ Not started | — |
+| 8 | Makefile | ✅ Done | `da0e880` |
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 8.
+**Next:** Task 9.
 
 ---
 
@@ -274,19 +274,49 @@ build: add docker-compose stack and monitoring configs (Prometheus, Loki, Grafan
 
 ---
 
-## Task 8 — Makefile
+## Task 8 — Makefile ✅
 
-**Why now.** Everything the targets depend on now exists, so they all actually work.
+**Status:** Done · Commit `da0e880`
 
-**Files created**
-- `makefile` — targets, grouped: **static analysis** (`check`, `format`, `find-unused`); **tests** (`test`, `test-report`, `coverage-badge`); **env/deps** (`install-env`, `install`, `install-test`, `install-dev`); **docker** (`build`, `up`, `down`, `restart`, `logs`, `status`, `clean`, `clean-logs`, `full-clean`, `prune`, `reset`); **vault** (`vault-status`, `vault-init`, `vault-unseal`, `vault-seal`); **db migrations** (`db-migrate`, `migrate-test`, `db-schema` — all stub-callable now; Epic 2 fills the `database/migrations/` content); **API keys** (`issue-api-key`, `revoke-api-key` — stub targets that `echo "not yet implemented (Epic 5)"`); **frontend** (`frontend-install`, `frontend-dev`, `frontend-build` — same stub pattern for Epic 7). Stubs are honest placeholders so the operator interface in `CLAUDE.md` matches reality.
-- Always pass `--migrations-table public.schema_migrations` to dbmate in every target that invokes it.
+**Shipped** — 1 new file
+- `makefile` (lowercase, matching `CLAUDE.md` and the plan) — 36 targets organized into 9 groups, with `help` as the `.DEFAULT_GOAL`. Tool paths resolved through `$(VENV)/bin/<tool>` (default `VENV ?= .venv`) so the active interpreter is unambiguous. `$(DBMATE_FLAGS) = --migrations-table public.schema_migrations` is passed to every dbmate invocation per the plan and `CLAUDE.md`.
+  - **Static analysis** — `check` runs **six** linters in sequence: isort, black, flake8, mypy, bandit, **pyright** (`npx --yes pyright --pythonpath .venv/bin/python`). `format` runs isort + black write-mode. `find-unused` runs vulture (config in `pyproject.toml`).
+  - **Tests** — `test` runs pytest with an exit-code wrapper that converts pytest's exit-5 ("no tests collected") into success (`exit 0`) while preserving all other exit codes (1/2/3/4 still propagate). `test-report` runs pytest with `--cov=. --cov-report=html`. `coverage-badge` produces `coverage.svg`.
+  - **Env / deps** — `install-env` copies `.env.template` → `.env` if missing, never overwrites. `install`, `install-test`, `install-dev` map 1:1 to the three requirements files.
+  - **Docker / Compose** — `build`, `up` (depends on `install-env` so a fresh checkout self-bootstraps), `down`, `restart`, `logs`, `status`, `clean`, `clean-logs` (best-effort truncate with optional `sudo` fallback), `full-clean` (down + remove named volumes), `prune` (`docker system prune -f`, no `--volumes`), `reset` (full-clean → build → up).
+  - **Vault** — `vault-status` (`vault status`, exit code swallowed because sealed is non-zero), `vault-init` (writes `vault_init_output.txt`), `vault-unseal` (loads `.env`, iterates the comma-separated `VAULT_UNSEAL_KEYS`), `vault-seal` (uses `VAULT_TOKEN` from `.env`). A comment block above the section flags that all four are no-ops while Vault runs in `-dev` mode.
+  - **DB migrations** — `db-migrate` and `db-schema` invoke real dbmate against a `DATABASE_URL` composed inline from `.env` (`postgres://$DB_USERNAME:$DB_PASSWORD@localhost:$DB_PORT/$DB_NAME?sslmode=disable`); both gracefully no-op when `database/migrations/` is empty. `migrate-test` is an honest `echo "not yet implemented (Epic 2)"` stub.
+  - **API keys** — `issue-api-key`, `revoke-api-key` — both `echo "not yet implemented (Epic 5)"`.
+  - **Frontend** — `frontend-install`, `frontend-dev`, `frontend-build` — all `echo "not yet implemented (Epic 7)"`.
 
-**Acceptance**
-- `make check` runs the full linter chain and passes on the current repo state.
-- `make test` runs pytest and reports zero tests (no test files yet; that's expected — Epic 2 onward adds them).
-- `make up` brings the stack up. `make down` tears it down.
-- `make install-env` creates `.env` from `.env.template` on a fresh checkout.
+**Verifications**
+- `make help` — prints all 34 user-facing targets with descriptions. Exit 0.
+- `make check` — all six linters pass (isort 0, black 0, flake8 0, mypy 0 / 33 source files, bandit 0 issues / 398 LoC, pyright 0 errors / 0 warnings / 0 informations). Exit 0.
+- `make test` — pytest reports `no tests ran`; wrapper prints `[make test] no tests collected (expected until Epic 2)` and exits 0.
+- `make install-env` — verified **both** paths:
+  - With `.env` present → prints `.env already exists; not overwriting.`, exits 0, leaves file untouched.
+  - With `.env` removed (then restored from backup after) → prints `Created .env from .env.template.`, exits 0, file recreated at 2718 bytes.
+- `make up` / `make down` deliberately not run by Claude — they wrap `docker compose up -d` / `down`, which was already validated in Task 7's `docker compose config` step.
+
+**Deviations from original plan**
+
+1. **`pyright` is now part of `make check`.** Resolves the carry-over follow-up from Task 4. Requires Node/npm on the host (the user already had it for the ad-hoc runs done in prior tasks). Task 9's CI workflow will need to install Node alongside Python. Adds ~3 s to a warm `make check` (npx caches pyright after first run).
+
+2. **`make test` swallows pytest exit code 5.** Without the wrapper, `make test` would always fail on the current empty-suite state, which contradicts the plan's "passes on the current repo state" wording. The wrapper preserves every other pytest exit code intact.
+
+3. **`clean-logs` does best-effort sudo fallback.** Docker log files are root-owned; the target tries `: > path` first, falls back to `sudo truncate -s 0 path`, and tolerates per-container failures. Prints `Container log files truncated where permissions allowed.` so the operator knows it was best-effort.
+
+4. **`prune` is global (`docker system prune -f`)** rather than project-scoped, and **does not include `--volumes`** so it can't destroy named volumes by accident. `full-clean` is the only target that removes volumes.
+
+5. **Vault targets ship even though Vault runs in `-dev` mode** (auto-init, auto-unseal). They'd error out today if invoked — that's intentional honest behavior, and the operator interface stays stable for the eventual production-mode flip.
+
+6. **`up` depends on `install-env`** so a fresh-clone workflow is `git clone … && make up` — no manual `cp .env.template .env` step needed. Plan didn't pin the dependency relationship; this is a DX call.
+
+**Follow-ups**
+
+- **Resolved this task:** `pyright` is wired into `make check`. Consequence carried into Task 9: the CI workflow needs to install Node alongside Python.
+- **(Carry-over)** `pydantic-settings` still pinned in `requirements.txt` but unused after the Task 4 refactor.
+- **(Carry-over)** Decide whether to purge `build-essential` from the Docker image to reclaim ~300 MB.
 
 **Proposed commit message**
 ```
