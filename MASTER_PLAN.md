@@ -24,7 +24,7 @@ The workflow exists so the user retains **100% ownership** of every commit. Full
 | # | Epic | Status | Notes |
 |---|------|--------|-------|
 | 1 | Repo scaffold + Docker Compose + CI stub | ✅ Done | The structural skeleton — no business logic yet. Commits `dca18b0..b225ab7`. |
-| 2 | Database layer (dbmate, baseline migration, ETL helpers) | ⬜ Not started | Source of truth for schema; sandbox-test target wired up. |
+| 2 | Database layer (dbmate, baseline migration, ETL helpers) | 🟡 In progress | Source of truth for schema; sandbox-test target wired up. |
 | 3 | USGS ingestion worker | ⬜ Not started | Celery Beat every 60s; dedupe + revision tracking. |
 | 4 | Read API (events endpoints) | ⬜ Not started | `/events/recent`, `/events?near=...`, `/events?min_magnitude=...`. |
 | 5 | API-key auth + admin surface | ⬜ Not started | `Authenticate` dependency, Vault-backed key set, admin scope, locks endpoint. |
