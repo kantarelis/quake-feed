@@ -41,13 +41,13 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 3 | Directory skeleton (empty `__init__.py` packages) | ✅ Done | `a8d08ca` |
 | 4 | Shared utilities (`functions/`) | ✅ Done | `eb540f7` |
 | 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ✅ Done | `eb2c9aa` |
-| 6 | Dockerfile (single image for backend + worker + beat) | ⬜ Not started | — |
+| 6 | Dockerfile (single image for backend + worker + beat) | ✅ Done | _pending_ |
 | 7 | Docker Compose + monitoring configs | ⬜ Not started | — |
 | 8 | Makefile | ⬜ Not started | — |
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 6.
+**Next:** Task 7.
 
 ---
 
@@ -185,19 +185,33 @@ feat: add FastAPI entrypoint with /health and Manager/Views scaffold
 
 ---
 
-## Task 6 — Dockerfile
+## Task 6 — Dockerfile ✅
 
-**Why now.** The app runs locally; package it before Compose can use it.
+**Status:** Done · Commit _pending_
 
-**One image, used by three services.** The backend, Celery worker, and Celery beat all run the same code — only the command differs. One `Dockerfile` is enough; docker-compose picks the entrypoint per service. Prometheus uses the official upstream image with our scrape config mounted in (Task 7), so no custom Prometheus image is needed.
+**Shipped** — 2 new files
+- `Dockerfile` — single-stage image from `python:3.14-slim`. Layer order: ENV (`PYTHONUNBUFFERED=1`, `PYTHONDONTWRITEBYTECODE=1`, `PIP_NO_CACHE_DIR=1`, `PIP_DISABLE_PIP_VERSION_CHECK=1`) → `apt-get install build-essential libpq-dev` + cleanup → `WORKDIR /app` → copy the three requirement files only → `pip install -r requirements-dev.txt` (pulls runtime + test + dev via the cascading `-r` chain) → copy full source → `groupadd appuser` + `useradd` (system, gid `appuser`, home `/app`) + `chown -R` → `USER appuser` → `CMD ["python", "__main__.py"]`. The split between requirements copy and source copy keeps the dependency layer cacheable across source-only rebuilds. Worker and beat services will override the command in `docker-compose.yml` (Task 7).
+- `.dockerignore` — not in the task's listed deliverables but added as a judgment call (without it the build context would have shipped `.venv/`, `.git/`, and every cache directory). Excludes: VCS (`.git/`, `.gitignore`, `.gitattributes`), Python (`__pycache__/`, `*.py[cod]`, `.venv/`, `build/`, `dist/`, `*.egg-info/`), test/coverage/type-checker caches (`.pytest_cache/`, `.mypy_cache/`, `.coverage*`, `htmlcov/`, `.ruff_cache/`, etc.), `frontend/` + `node_modules/` (backend image needs neither), env/secret files (`.env`, `.env.local`, `.env.*.local`, `vault_init_output.txt`), generated `database/schema.sql`, Docker/Compose definitions themselves (`Dockerfile`, `.dockerignore`, `docker-compose.yml`, `docker-compose.override.yml`), `monitoring/` (mounted into Prometheus/Grafana/Loki via Compose volumes — not part of the app image), planning docs (`PLAN.md`, `MASTER_PLAN.md`, `docs/`), editor/OS noise, `*.log`.
 
-**Files created**
-- `Dockerfile` — single image. `python:3.14-slim` base, system deps for `psycopg` (`libpq-dev`, `build-essential`), copy `requirements-dev.txt` + `pip install` (pulls runtime + test + linters via the cascading `-r` chain), copy source, non-root `appuser`, `CMD ["python", "__main__.py"]`. Worker / beat override the command in docker-compose. Local-only project, so installing the dev/test stack into the image keeps `make test` runnable in-container without juggling two images.
+**Verifications**
+- `docker build -t quake-feed .` succeeded end-to-end on Docker 29.4.3. The install log shows `psycopg-binary-3.3.4` was installed as a precompiled wheel for `cp314`, so the C compiler never actually had to build psycopg from source.
+- **Image size:** 677 MB (`docker images quake-feed`). Above the plan's "under ~600 MB" soft target by ~13%. See deviations.
+- **Import smoke test (literal acceptance line, expanded):**
+  `docker run --rm --entrypoint python quake-feed -c "import quake; import quake.api.main.main; import functions; import functions.environment; import functions.logger; import functions.vault; print('OK')"`
+  → prints `OK`, exits 0. The image is importable; no Uvicorn boot because env vars aren't injected — matches the plan's expectation.
 
-**Acceptance**
-- `docker build -t quake-feed .` succeeds.
-- Image size is reasonable (`docker images quake-feed` — expect somewhere under ~600 MB with the dev/test stack included).
-- `docker run --rm --entrypoint python quake-feed -c "import quake; import functions; print('OK')"` exits 0 (image is importable; no startup runs because env vars aren't set).
+**Deviations from original plan**
+
+1. **Image is 677 MB rather than under 600 MB.** Two contributors:
+   - `build-essential` (~300 MB) is retained at runtime per the plan's explicit "system deps for `psycopg` (`libpq-dev`, `build-essential`)" wording. In practice psycopg installed from a wheel, so build-essential was only needed transiently. Reclaiming that space cleanly is a one-line addition to the same `RUN` layer: `&& apt-get purge -y build-essential && apt-get autoremove -y`. Flagged as a follow-up rather than acted on, because the plan explicitly listed those packages and the runtime change would be a structural deviation.
+   - The full dev/test/lint stack is included on purpose (per the plan: keep `make test` runnable in-container without juggling images).
+
+2. **`.dockerignore` added.** Not in the task's file list but necessary to make the build sane (without it `.venv/` and `.git/` would be in the context). Documented in the **Shipped** section above.
+
+**Open follow-ups**
+- (Unchanged from Task 4) `pyright` not yet wired into `make check` / CI — slated for Tasks 8 and 9.
+- (Unchanged from Task 4) `pydantic-settings` still pinned in `requirements.txt` despite being unused after the Task 4 refactor.
+- (New, Task 6) Decide whether to purge `build-essential` after install to reclaim ~300 MB. Cosmetic optimization; can be folded into a later pass or rolled into Task 7's compose-time validation.
 
 **Proposed commit message**
 ```
