@@ -1,0 +1,147 @@
+# Local development / demo stack for quake-feed.
+#
+# - One image (built by the `backend` service) powers backend, celery worker,
+#   and celery beat — they only differ by the command they run.
+# - Service names match the hostnames in `.env.template` so app config lines
+#   like `DB_HOST="postgres-db"` resolve directly via Docker's DNS.
+# - Ports are env-driven so the operator can move them without editing YAML.
+# - Volumes named `pgdata`, `loki-data`, `grafana-data`, `vault-data` persist
+#   data across `docker compose down` (but not `down -v`).
+
+services:
+  # -------------------------------------------------------------------------
+  # Application services (same image, different commands)
+  # -------------------------------------------------------------------------
+  backend:
+    build: .
+    image: quake-feed:latest
+    container_name: quake_backend
+    env_file: .env
+    ports:
+      - "${QUAKE_BIND_PORT}:${QUAKE_BIND_PORT}"
+    depends_on:
+      - postgres-db
+      - rabbitmq
+      - vault
+    networks:
+      - quake_platform
+
+  celery_worker:
+    image: quake-feed:latest
+    container_name: quake_celery_worker
+    command: celery -A config.celery_app worker --loglevel=info
+    env_file: .env
+    depends_on:
+      - rabbitmq
+      - postgres-db
+    networks:
+      - quake_platform
+
+  celery_beat:
+    image: quake-feed:latest
+    container_name: quake_celery_beat
+    command: celery -A config.celery_app beat --loglevel=info
+    env_file: .env
+    depends_on:
+      - rabbitmq
+    networks:
+      - quake_platform
+
+  # -------------------------------------------------------------------------
+  # Stateful services
+  # -------------------------------------------------------------------------
+  postgres-db:
+    image: timescale/timescaledb:latest-pg18
+    container_name: quake_postgres
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "${DB_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - quake_platform
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: quake_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+    ports:
+      - "${RABBITMQ_AMQP_PORT}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT}:15672"
+    networks:
+      - quake_platform
+
+  vault:
+    image: hashicorp/vault:1.21.1
+    container_name: quake_vault
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: ${VAULT_DEV_ROOT_TOKEN_ID}
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+    ports:
+      - "${VAULT_PORT}:8200"
+    cap_add:
+      - IPC_LOCK
+    command: server -dev
+    volumes:
+      - vault-data:/vault/file
+    networks:
+      - quake_platform
+
+  # -------------------------------------------------------------------------
+  # Observability stack
+  # -------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.46.0
+    container_name: quake_prometheus
+    ports:
+      - "${PROMETHEUS_PORT}:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - quake_platform
+
+  loki:
+    image: grafana/loki:3.2.0
+    container_name: quake_loki
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "${LOKI_PORT}:3100"
+    volumes:
+      - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    networks:
+      - quake_platform
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: quake_grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+    ports:
+      - "${GRAFANA_PORT}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+      - loki
+    networks:
+      - quake_platform
+
+volumes:
+  pgdata:
+  loki-data:
+  grafana-data:
+  vault-data:
+
+networks:
+  quake_platform:
+    name: quake_platform
+    driver: bridge
