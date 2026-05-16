@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+# ---------------------------------------------------------------------------
+# Black — formatter
+# ---------------------------------------------------------------------------
+[tool.black]
+line-length = 120
+target-version = ["py314"]
+include = '\.pyi?$'
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.mypy_cache
+  | \.pytest_cache
+  | build
+  | dist
+  | frontend
+)/
+'''
+
+# ---------------------------------------------------------------------------
+# Bandit — security linter
+# ---------------------------------------------------------------------------
+[tool.bandit]
+skips = []
+exclude_dirs = [".venv", "tests", "dist", "build", "frontend"]
+
+# ---------------------------------------------------------------------------
+# Vulture — dead-code detector
+# ---------------------------------------------------------------------------
+[tool.vulture]
+paths = ["."]
+exclude = [".venv", "tests", "dist", "build", "frontend"]
+min_confidence = 80
+ignore_decorators = [
+    "@celery_app.task",
+    "@*.task",
+    "@*.connect",
+]
+ignore_names = ["Config"]
+
+# ---------------------------------------------------------------------------
+# Pyright — optional, mirrors mypy for editor support
+# ---------------------------------------------------------------------------
+[tool.pyright]
+include = ["."]
+exclude = [".venv", "build", "dist", "frontend", "tests", ".mypy_cache", ".pytest_cache"]
+pythonVersion = "3.14"
+reportMissingImports = "warning"

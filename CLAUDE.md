@@ -121,8 +121,7 @@ config.py                    # Celery app instance (`from config import celery_a
 __main__.py                  # Application entry point
 __metadata__.py              # Project metadata (version, authors, license)
 docker-compose.yml           # Backend, worker, beat, postgres+timescale, rabbitmq, vault, prometheus, grafana, loki
-Dockerfile / Dockerfile-dev  # Production / dev images for backend+worker+beat
-Dockerfile-prometheus        # Prometheus image with our scrape config baked in
+Dockerfile                   # Single image for backend + worker + beat (all share the same code)
 makefile                     # All dev/ops entrypoints
 .env.template                # Reference env file
 pyproject.toml / setup.cfg   # Tool configs (black, isort, flake8, mypy, bandit, vulture)
@@ -146,8 +145,8 @@ This is the **default workflow for every epic** in this repo. The workflow exist
 
 **The two-document model:**
 
-- **`MASTER_PLAN.md`** (committed, repo root) — lists **epics only**, each with status. Never lists individual tasks.
-- **`PLAN.md`** (gitignored, repo root) — created per epic; breaks the active epic into ordered **tasks**. **Each task is exactly one commit.** Local working doc shared between Claude and the user, never pushed.
+- **`MASTER_PLAN.md`** (repo root) — lists **epics only**, each with status. Never lists individual tasks.
+- **`PLAN.md`** (repo root, **tracked in git**) — created per epic; breaks the active epic into ordered **tasks**. **Each task is exactly one commit.** Only one `PLAN.md` lives at the root at a time — it always describes the currently active epic. Tracking it in git gives every epic a permanent planned-vs-shipped record next to the code it produced.
 
 **Absolute git rule (no exceptions):**
 
@@ -169,7 +168,7 @@ This is the **default workflow for every epic** in this repo. The workflow exist
 4. **User reviews, commits, pushes.** Claude does nothing during this window. Do not poll, do not "check if it's pushed", do not run `git status` proactively to nag.
 5. **User prompts the next task.** Claude moves to the next task. Repeat from step 3 until the epic's tasks are exhausted.
 6. **Plan update on request.** When the user asks ("update PLAN.md"), Claude updates the progress table (mark Done + commit hash if the user supplied it) and rewrites the per-task section as an **outcome record** (what actually happened, deviations, why).
-7. **Epic complete.** When all tasks are done, the user asks Claude to close out the epic: mark it Done in `MASTER_PLAN.md` with the commit range, and delete (or archive to `docs/history/`) the per-epic `PLAN.md`.
+7. **Epic complete.** When all tasks are done, the user asks Claude to close out the epic: mark it Done in `MASTER_PLAN.md` with the commit range, then **archive `PLAN.md` to `docs/history/epic-NN-<slug>.md`** in a single rename commit. The root `PLAN.md` slot is now free for the next epic's draft.
 
 **Deviation rule.** Only **major / structural** deviations from `PLAN.md` (e.g. a different split layout, rejecting a planned pattern, adding/removing a task, changing a task's scope mid-implementation) require Claude to stop and ask before writing code. Cosmetic decisions inside a planned task scope (helper grouping, file naming inside a planned folder) are at Claude's discretion and get recorded in the post-task outcome update.
 
@@ -178,8 +177,13 @@ This is the **default workflow for every epic** in this repo. The workflow exist
 ### Static Analysis Gate
 
 - **Always run `make check` after completing a feature or fix** — runs isort, black, flake8, mypy, bandit.
-- Fix all issues reported by these tools before considering work complete; do not suppress warnings with `# nosec`, `# type: ignore`, `# noqa`, etc. unless there is a genuine, documented reason.
-- Prefer refactoring code to satisfy the linter over adding exceptions (e.g., use `ANY(%s)` instead of f-string SQL to satisfy bandit B608).
+- Fix all issues reported by these tools before considering work complete.
+- **Never suppress diagnostics at the line level.** The following directives are forbidden anywhere in the codebase, no exceptions: `# type: ignore`, `# noqa`, `# nosec`, `# pragma: no cover`, `# mypy: ignore-errors`, `# fmt: off/on`, or any equivalent silencer for any tool we run. This rule is absolute — "but it's a false positive" is not a justification.
+- When a tool flags something, the fix is one of:
+  1. **Refactor the code** so the diagnostic no longer applies (e.g. use `ANY(%s)` instead of f-string SQL to satisfy bandit B608; rename a function whose name `vulture` flags as unused).
+  2. **Adjust the tool's project-wide config** in `pyproject.toml` / `setup.cfg` (e.g. add a stub-less library to `[mypy]` `ignore_missing_imports`, exclude a generated file from `[tool.vulture]`).
+  3. **Install a plugin or stub** that teaches the tool about the runtime semantics it's misunderstanding (e.g. `plugins = pydantic.mypy` for Pydantic-aware `__init__` typing; `types-*` stub packages from typeshed).
+- If none of those three options works, the design is wrong — change it rather than silence the tool.
 
 ### Python Style
 
@@ -319,7 +323,7 @@ Run `make migrate-test` — spins up a throwaway TimescaleDB on port 5433, appli
 
 ## Project Roadmap
 
-See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the epic-level breakdown and current status. Each in-progress epic gets its own `PLAN.md` at the repo root (gitignored) with PR-sized steps.
+See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the epic-level breakdown and current status. The currently active epic has its own `PLAN.md` at the repo root with PR-sized tasks; completed epics' plans are archived under [`docs/history/`](docs/history/).
 
 ## Constraints to keep in mind
 

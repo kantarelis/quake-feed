@@ -1,0 +1,100 @@
+# Keep the build context small and the resulting image free of host artifacts
+# that would either bloat the layer (`.venv`, `.git`, caches) or leak local
+# state (`.env`, vault output, generated SQL schema).
+
+# ---------------------------------------------------------------------------
+# Git
+# ---------------------------------------------------------------------------
+.git/
+.gitignore
+.gitattributes
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+
+# Test / coverage artifacts
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.cache/
+
+# Type checker / lint caches
+.mypy_cache/
+.pyre/
+.pytype/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# Node / frontend (the backend image does not need the SPA source)
+# ---------------------------------------------------------------------------
+frontend/
+node_modules/
+
+# ---------------------------------------------------------------------------
+# Environment / secrets
+# ---------------------------------------------------------------------------
+.env
+.env.local
+.env.*.local
+vault_init_output.txt
+
+# ---------------------------------------------------------------------------
+# Generated artifacts
+# ---------------------------------------------------------------------------
+database/schema.sql
+
+# ---------------------------------------------------------------------------
+# Docker / Compose definitions (no value inside the image itself)
+# ---------------------------------------------------------------------------
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.override.yml
+
+# ---------------------------------------------------------------------------
+# Monitoring configs (mounted into prometheus/grafana/loki containers via
+# `volumes:` in compose; do not need to live in the app image)
+# ---------------------------------------------------------------------------
+monitoring/
+
+# ---------------------------------------------------------------------------
+# Planning / project docs
+# ---------------------------------------------------------------------------
+PLAN.md
+MASTER_PLAN.md
+docs/
+
+# ---------------------------------------------------------------------------
+# Editor / OS
+# ---------------------------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+*.log

@@ -1,0 +1,28 @@
+# Runtime dependencies for quake-feed.
+# Pinned to known-good versions compatible with Python 3.14.
+
+# --- Web framework ---
+fastapi==0.136.1
+uvicorn[standard]==0.47.0
+# sse-starlette>=2.1.0
+
+# --- Validation / settings ---
+pydantic==2.13.4
+pydantic-settings==2.14.1
+
+# --- Database ---
+psycopg[binary]==3.3.4
+
+# --- Task queue ---
+celery==5.6.3
+
+# --- Secrets ---
+hvac==2.4.0
+
+# --- Observability ---
+prometheus-client==0.25.0
+python-json-logger==4.1.0
+
+# --- HTTP client / retries ---
+httpx==0.28.1
+tenacity==9.1.4
