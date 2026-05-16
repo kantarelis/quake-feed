@@ -70,3 +70,57 @@ jobs:
 
       - name: make test
         run: make test
+
+  migration-test:
+    name: migration-test
+    needs: check
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://quake:quake@localhost:5432/quake-db?sslmode=disable
+    services:
+      postgres:
+        image: timescale/timescaledb:latest-pg18
+        env:
+          POSTGRES_USER: quake
+          POSTGRES_PASSWORD: quake
+          POSTGRES_DB: quake-db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U quake -d quake-db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: dbmate up (cold start)
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/database":/db:ro \
+            -e DATABASE_URL \
+            amacneil/dbmate:latest \
+            --migrations-dir /db/migrations \
+            --migrations-table public.schema_migrations \
+            up
+
+      - name: dbmate down (roll back newest migration)
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/database":/db:ro \
+            -e DATABASE_URL \
+            amacneil/dbmate:latest \
+            --migrations-dir /db/migrations \
+            --migrations-table public.schema_migrations \
+            down
+
+      - name: dbmate up (re-apply newest migration)
+        run: |
+          docker run --rm --network host \
+            -v "$PWD/database":/db:ro \
+            -e DATABASE_URL \
+            amacneil/dbmate:latest \
+            --migrations-dir /db/migrations \
+            --migrations-table public.schema_migrations \
+            up
