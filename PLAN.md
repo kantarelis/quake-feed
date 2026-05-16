@@ -41,13 +41,13 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 3 | Directory skeleton (empty `__init__.py` packages) | ✅ Done | `a8d08ca` |
 | 4 | Shared utilities (`functions/`) | ✅ Done | `eb540f7` |
 | 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ✅ Done | `eb2c9aa` |
-| 6 | Dockerfile (single image for backend + worker + beat) | ✅ Done | _pending_ |
-| 7 | Docker Compose + monitoring configs | ⬜ Not started | — |
+| 6 | Dockerfile (single image for backend + worker + beat) | ✅ Done | `7e6bc52` |
+| 7 | Docker Compose + monitoring configs | ✅ Done | `20f06af` |
 | 8 | Makefile | ⬜ Not started | — |
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 7.
+**Next:** Task 8.
 
 ---
 
@@ -187,7 +187,7 @@ feat: add FastAPI entrypoint with /health and Manager/Views scaffold
 
 ## Task 6 — Dockerfile ✅
 
-**Status:** Done · Commit _pending_
+**Status:** Done · Commits `7e6bc52..eb901db`
 
 **Shipped** — 2 new files
 - `Dockerfile` — single-stage image from `python:3.14-slim`. Layer order: ENV (`PYTHONUNBUFFERED=1`, `PYTHONDONTWRITEBYTECODE=1`, `PIP_NO_CACHE_DIR=1`, `PIP_DISABLE_PIP_VERSION_CHECK=1`) → `apt-get install build-essential libpq-dev` + cleanup → `WORKDIR /app` → copy the three requirement files only → `pip install -r requirements-dev.txt` (pulls runtime + test + dev via the cascading `-r` chain) → copy full source → `groupadd appuser` + `useradd` (system, gid `appuser`, home `/app`) + `chown -R` → `USER appuser` → `CMD ["python", "__main__.py"]`. The split between requirements copy and source copy keeps the dependency layer cacheable across source-only rebuilds. Worker and beat services will override the command in `docker-compose.yml` (Task 7).
@@ -220,20 +220,52 @@ build: add Dockerfile (single image for backend, worker, beat)
 
 ---
 
-## Task 7 — Docker Compose + monitoring configs
+## Task 7 — Docker Compose + monitoring configs ✅
 
-**Why now.** Images exist; orchestrate them.
+**Status:** Done · Commit `20f06af`
 
-**Files created**
-- `docker-compose.yml` — services: `backend` (uses the single `Dockerfile`, optionally mounts the source via a `volumes:` entry for live-reload), `celery_worker` (same image, runs `celery -A config.celery_app worker`), `celery_beat` (same image, runs `celery -A config.celery_app beat`), `postgres` (`timescale/timescaledb:latest-pg18`), `rabbitmq` (`rabbitmq:3-management`), `vault` (`hashicorp/vault:1.21.1` in dev mode), `prometheus` (`prom/prometheus:v2.46.0` upstream — `monitoring/prometheus.yml` mounted in via `volumes:`), `grafana`, `loki`. One `quake_platform` network. Named volumes: `pgdata`, `loki-data`, `grafana-data`, `vault-data`. Env-var-driven ports.
-- `monitoring/prometheus.yml` — scrape configs: backend on `:8000/metrics`, celery-worker on `:8001/metrics`.
-- `monitoring/loki-config.yml` — minimal Loki config (single-binary, filesystem storage).
-- `monitoring/grafana/provisioning/datasources/datasources.yml` — Prometheus + Loki datasources.
-- `monitoring/grafana/provisioning/dashboards/dashboards.yml` — dashboard provider pointing at `/var/lib/grafana/dashboards`.
+**Shipped** — 5 new files
+- `docker-compose.yml` — 9 services on a single `quake_platform` bridge network (declared with `name: quake_platform` so the network isn't compose-project-prefixed). No top-level `version:` key (deprecated under Compose v2).
+  - **App services** (all use the same image): `backend` is the only one with `build: .` + `image: quake-feed:latest`; `celery_worker` (`celery -A config.celery_app worker --loglevel=info`) and `celery_beat` (`celery -A config.celery_app beat --loglevel=info`) reference the same image. All three load app env via `env_file: .env`. `backend` publishes `${QUAKE_BIND_PORT}:${QUAKE_BIND_PORT}` (env-driven on both sides so changing the env var moves both host and container ports together).
+  - **Stateful services**: `postgres-db` (`timescale/timescaledb:latest-pg18`, `POSTGRES_USER/PASSWORD/DB` mapped from `DB_*` env), `rabbitmq` (`rabbitmq:3-management`, `RABBITMQ_DEFAULT_USER/PASS` mapped, both AMQP and management ports published), `vault` (`hashicorp/vault:1.21.1`, `command: server -dev`, `cap_add: IPC_LOCK`, `VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200`).
+  - **Observability**: `prom/prometheus:v2.46.0` mounts `./monitoring/prometheus.yml`; `grafana/loki:3.2.0` mounts `./monitoring/loki-config.yml` + `loki-data` volume; `grafana/grafana:11.3.0` mounts the full provisioning tree (`./monitoring/grafana/provisioning` → `/etc/grafana/provisioning`) plus `./monitoring/grafana/dashboards` → `/var/lib/grafana/dashboards` and `grafana-data` volume.
+  - **Named volumes**: `pgdata`, `loki-data`, `grafana-data`, `vault-data`.
+  - **depends_on**: `backend` → postgres-db, rabbitmq, vault; `celery_worker` → rabbitmq, postgres-db; `celery_beat` → rabbitmq; `grafana` → prometheus, loki. Plain start-order dependencies (not `condition: service_healthy`) per the plan's lack of healthchecks.
 
-**Acceptance**
-- `docker compose config` passes (validates the file).
-- `docker compose up -d` (run manually) brings every service to a Running state. `curl localhost:8000/health` returns ok. Grafana reachable on `:3000`. Vault sealed on `:8200`.
+- `monitoring/prometheus.yml` — `global` block (15 s scrape + evaluation intervals). Two static `scrape_configs`: `backend` (`backend:8000`, `/metrics`) and `celery_worker` (`celery_worker:8001`, `/metrics`).
+- `monitoring/loki-config.yml` — single-binary Loki: `auth_enabled: false`, HTTP `:3100` / gRPC `:9096`, filesystem storage under `/loki`, in-memory ring, tsdb v13 schema starting `2024-01-01`, `analytics.reporting_enabled: false`.
+- `monitoring/grafana/provisioning/datasources/datasources.yml` — Prometheus (default, `http://prometheus:9090`) + Loki (`http://loki:3100`). Both `editable: false`.
+- `monitoring/grafana/provisioning/dashboards/dashboards.yml` — one file-based provider scanning `/var/lib/grafana/dashboards`, `updateIntervalSeconds: 10`.
+
+**Verifications**
+- `docker compose config` — exits 0, full rendered YAML valid.
+- `docker compose config --services` lists all 9 expected services (`backend`, `celery_worker`, `celery_beat`, `postgres-db`, `rabbitmq`, `vault`, `prometheus`, `grafana`, `loki`).
+- `docker compose config --volumes` lists exactly `pgdata`, `loki-data`, `grafana-data`, `vault-data`.
+- `docker compose config --networks` lists exactly `quake_platform`.
+- Variable substitution from `.env` resolved correctly in the rendered output (`VAULT_DEV_ROOT_TOKEN_ID: root-token`, `RABBITMQ_DEFAULT_USER: guest`, `POSTGRES_USER: quake`, etc.).
+- `docker compose up -d` deliberately **not** run by Claude — the plan says "(run manually)". That step (and curling `/health`, hitting Grafana at `:3000`, etc.) is the user's verification.
+
+**Deviations from original plan**
+
+1. **Service named `postgres-db`, not `postgres`.** The shipped `.env.template` (Task 1) declares `DB_HOST="postgres-db"`. Matching the service name keeps Docker DNS resolution working without editing the env file. Cosmetic naming only — connection semantics unchanged.
+
+2. **Loki and Grafana images pinned to specific versions** (`grafana/loki:3.2.0`, `grafana/grafana:11.3.0`). The plan listed them by image name only, with no tag. Pinned to recent-stable tags so the stack is reproducible across runs, mirroring the explicit pins the plan gave for Prometheus and Vault.
+
+3. **`backend` publishes `${QUAKE_BIND_PORT}:${QUAKE_BIND_PORT}`** rather than hardcoding `8000` on the container side. Lets `QUAKE_BIND_PORT` flow end-to-end via env alone.
+
+4. **No live-reload volumes mount on `backend`.** Plan said "optionally mounts the source via a `volumes:` entry for live-reload". Skipped: without `uvicorn --reload` the mount accomplishes nothing, and the runtime command is `python __main__.py`. Live-reload, if wanted, belongs in `docker-compose.override.yml` (already in `.gitignore`) to keep dev-only state out of the committed stack.
+
+5. **Existing `.gitkeep` files under `monitoring/grafana/`** (`dashboards/`, `provisioning/datasources/`, `provisioning/dashboards/`) left in place. They're inert for Grafana (it only loads YAML/JSON), and removing them is a sweep not in this task's scope.
+
+**Things to know before `docker compose up -d`**
+- Prometheus scrape targets (`backend:8000/metrics`, `celery_worker:8001/metrics`) will show **DOWN** in Grafana — the `/metrics` endpoints aren't exposed yet (they land in later epics). Stack still comes up cleanly; this is cosmetic noise.
+- Vault dev mode auto-unseals on startup; the plan's "Vault sealed on :8200" is read as "Vault reachable on :8200" (the dev-mode choice is explicit in the plan and `.env.template`). The unseal key is printed to the container logs; production-mode seal/unseal exercise will happen via `make vault-init` once Task 8 lands and (eventually) if the container mode changes.
+- Backend's `init_vault` will now succeed (DNS resolves `vault` inside the network), upgrading the Task 5 boot-time WARNING to an INFO line.
+
+**Open follow-ups**
+- (Carry-over) `pyright` not yet wired into `make check` / CI — Tasks 8 and 9.
+- (Carry-over) `pydantic-settings` still pinned in `requirements.txt` but unused.
+- (Carry-over) Decide whether to purge `build-essential` from the Docker image to reclaim ~300 MB.
 
 **Proposed commit message**
 ```
