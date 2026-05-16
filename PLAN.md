@@ -38,7 +38,7 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 |---|------|--------|--------|
 | 1 | Root hygiene (`.gitignore`, `.env.template`) | ✅ Done | `dca18b0` |
 | 2 | Python tooling config (`pyproject.toml`, `setup.cfg`, `pytest.ini`, `requirements*.txt`, `__metadata__.py`) | ✅ Done | `e4dd5fc` |
-| 3 | Directory skeleton (empty `__init__.py` packages) | ⬜ Not started | — |
+| 3 | Directory skeleton (empty `__init__.py` packages) | ✅ Done | `a8d08ca` |
 | 4 | Shared utilities (`functions/`) | ⬜ Not started | — |
 | 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ⬜ Not started | — |
 | 6 | Dockerfiles (`Dockerfile`, `Dockerfile-dev`, `Dockerfile-prometheus`) | ⬜ Not started | — |
@@ -47,7 +47,7 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 3.
+**Next:** Task 4.
 
 ---
 
@@ -97,30 +97,21 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 
 ---
 
-## Task 3 — Directory skeleton
+## Task 3 — Directory skeleton ✅
 
-**Why now.** Establishing the import surface up front means every later task adds *content* to known files, not new directories.
+**Status:** Done · Commit `a8d08ca`
 
-**Files created** (all empty `__init__.py` unless noted)
-- `quake/__init__.py`, `quake/api/__init__.py`, `quake/api/main/__init__.py`, `quake/api/events/__init__.py`, `quake/api/alerts/__init__.py`, `quake/api/ingest/__init__.py`, `quake/api/locks/__init__.py`
-- `quake/ingestion/__init__.py`, `quake/ingestion/usgs/__init__.py`
-- `quake/events/__init__.py`, `quake/alerts/__init__.py`
-- `database/__init__.py`, `database/etls/__init__.py`, `database/migrations/.gitkeep`
-- `functions/__init__.py`
-- `models/__init__.py`
-- `tests/__init__.py`, `tests/unit/__init__.py`, `tests/integration/__init__.py`, `tests/manual/__init__.py`, `tests/fixtures/__init__.py`, `tests/conftest.py` (empty)
-- `docs/.gitkeep`
-- `monitoring/grafana/dashboards/.gitkeep`, `monitoring/grafana/provisioning/datasources/.gitkeep`, `monitoring/grafana/provisioning/dashboards/.gitkeep`
-- `frontend/.gitkeep` (frontend scaffold is its own epic)
+**Shipped** — 27 files total
+- 18 empty `__init__.py` markers for the `quake/` package tree (`quake/`, `quake/api/`, `quake/api/{main,events,alerts,ingest,locks}/`, `quake/ingestion/`, `quake/ingestion/usgs/`, `quake/events/`, `quake/alerts/`) plus `functions/`, `models/`, `database/`, `database/etls/`, and all five `tests/` packages (`tests/`, `tests/{unit,integration,manual,fixtures}/`).
+- 1 empty `tests/conftest.py`.
+- 8 `.gitkeep` placeholders: `database/migrations/`, `docs/`, `frontend/`, `monitoring/grafana/dashboards/`, `monitoring/grafana/provisioning/{datasources,dashboards}/`.
 
-**Acceptance**
-- `python -c "import quake; import functions; import models; import database"` succeeds.
-- Linters still pass.
+**Verifications**
+- `python -c "import quake; import quake.api; …"` succeeds for all 14 importable package paths.
+- All 5 linters pass: isort exit 0 (3 files skipped — configs), black exit 0 (22 files unchanged), flake8 exit 0, mypy exit 0 (22 source files), bandit exit 0.
 
-**Proposed commit message**
-```
-chore: scaffold package directory layout
-```
+**Deviations from original plan**
+None. Files and directory layout match the plan exactly.
 
 ---
 
