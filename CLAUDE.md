@@ -146,8 +146,8 @@ This is the **default workflow for every epic** in this repo. The workflow exist
 
 **The two-document model:**
 
-- **`MASTER_PLAN.md`** (committed, repo root) — lists **epics only**, each with status. Never lists individual tasks.
-- **`PLAN.md`** (gitignored, repo root) — created per epic; breaks the active epic into ordered **tasks**. **Each task is exactly one commit.** Local working doc shared between Claude and the user, never pushed.
+- **`MASTER_PLAN.md`** (repo root) — lists **epics only**, each with status. Never lists individual tasks.
+- **`PLAN.md`** (repo root, **tracked in git**) — created per epic; breaks the active epic into ordered **tasks**. **Each task is exactly one commit.** Only one `PLAN.md` lives at the root at a time — it always describes the currently active epic. Tracking it in git gives every epic a permanent planned-vs-shipped record next to the code it produced.
 
 **Absolute git rule (no exceptions):**
 
@@ -169,7 +169,7 @@ This is the **default workflow for every epic** in this repo. The workflow exist
 4. **User reviews, commits, pushes.** Claude does nothing during this window. Do not poll, do not "check if it's pushed", do not run `git status` proactively to nag.
 5. **User prompts the next task.** Claude moves to the next task. Repeat from step 3 until the epic's tasks are exhausted.
 6. **Plan update on request.** When the user asks ("update PLAN.md"), Claude updates the progress table (mark Done + commit hash if the user supplied it) and rewrites the per-task section as an **outcome record** (what actually happened, deviations, why).
-7. **Epic complete.** When all tasks are done, the user asks Claude to close out the epic: mark it Done in `MASTER_PLAN.md` with the commit range, and delete (or archive to `docs/history/`) the per-epic `PLAN.md`.
+7. **Epic complete.** When all tasks are done, the user asks Claude to close out the epic: mark it Done in `MASTER_PLAN.md` with the commit range, then **archive `PLAN.md` to `docs/history/epic-NN-<slug>.md`** in a single rename commit. The root `PLAN.md` slot is now free for the next epic's draft.
 
 **Deviation rule.** Only **major / structural** deviations from `PLAN.md` (e.g. a different split layout, rejecting a planned pattern, adding/removing a task, changing a task's scope mid-implementation) require Claude to stop and ask before writing code. Cosmetic decisions inside a planned task scope (helper grouping, file naming inside a planned folder) are at Claude's discretion and get recorded in the post-task outcome update.
 
@@ -319,7 +319,7 @@ Run `make migrate-test` — spins up a throwaway TimescaleDB on port 5433, appli
 
 ## Project Roadmap
 
-See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the epic-level breakdown and current status. Each in-progress epic gets its own `PLAN.md` at the repo root (gitignored) with PR-sized steps.
+See [`MASTER_PLAN.md`](MASTER_PLAN.md) for the epic-level breakdown and current status. The currently active epic has its own `PLAN.md` at the repo root with PR-sized tasks; completed epics' plans are archived under [`docs/history/`](docs/history/).
 
 ## Constraints to keep in mind
 

@@ -36,7 +36,7 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 1 | Root hygiene (`.gitignore`, `.env.template`, pre-commit) | ⬜ Not started | — |
+| 1 | Root hygiene (`.gitignore`, `.env.template`) | ⬜ Not started | — |
 | 2 | Python tooling config (`pyproject.toml`, `setup.cfg`, `pytest.ini`, `requirements*.txt`, `__metadata__.py`) | ⬜ Not started | — |
 | 3 | Directory skeleton (empty `__init__.py` packages) | ⬜ Not started | — |
 | 4 | Shared utilities (`functions/`) | ⬜ Not started | — |
@@ -53,20 +53,21 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 
 ## Task 1 — Root hygiene
 
-**Why first.** Without `.gitignore` the very first commit could capture `PLAN.md`, `.env`, `__pycache__/`, etc. Get the guard rails in before any other file.
+**Why first.** Without `.gitignore` the very first commit could capture `.env`, `__pycache__/`, etc. Get the guard rails in before any other file.
 
 **Files created**
-- `.gitignore` — Python (`__pycache__`, `*.pyc`, `.venv`, `*.egg-info`, `dist`, `build`, `htmlcov`, `.coverage`, `.mypy_cache`, `.pytest_cache`), Node (`node_modules`, `frontend/dist`), tooling (`.idea`, `.vscode`), env/secrets (`.env`, `vault_init_output.txt`), generated artifacts (`database/schema.sql`), and **explicitly `PLAN.md`**.
+- `.gitignore` — Python (`__pycache__`, `*.pyc`, `.venv`, `*.egg-info`, `dist`, `build`, `htmlcov`, `.coverage`, `.mypy_cache`, `.pytest_cache`), Node (`node_modules`, `frontend/dist`), tooling (`.idea`, `.vscode`), env/secrets (`.env`, `vault_init_output.txt`), generated artifacts (`database/schema.sql`).
 - `.env.template` — every variable the stack will reference, with safe local defaults: `ENVIRONMENT`, `APPLICATION_NAME`, `QUAKE_HOST_IP`, `QUAKE_BIND_PORT`, `DB_USERNAME`/`DB_PASSWORD`/`DB_NAME`/`DB_HOST`/`DB_PORT`, `LOGGER_NAME`/`LOGGER_LOG_LEVEL`/`LOKI_HOST`/`LOKI_PORT`, `PROMETHEUS_HOST`/`PROMETHEUS_PORT`/`GRAFANA_HOST`/`GRAFANA_PORT`/`GF_SECURITY_ADMIN_USER`/`GF_SECURITY_ADMIN_PASSWORD`, `RABBITMQ_HOST`/`RABBITMQ_USERNAME`/`RABBITMQ_PASSWORD`/`RABBITMQ_AMQP_PORT`/`RABBITMQ_MANAGEMENT_PORT`, `VAULT_HOST`/`VAULT_PORT`/`VAULT_DEV_ROOT_TOKEN_ID`/`VAULT_UNSEAL_KEYS`/`VAULT_TOKEN`.
-- `.pre-commit-config.yaml` — hooks for isort, black, flake8, mypy (light, no full type-check), bandit, plus `end-of-file-fixer`, `trailing-whitespace`, `check-yaml`, `check-toml`. Pinned versions matching what we'll install in Task 2.
+
+> **Note.** Pre-commit hooks were considered and explicitly dropped. `make check` (Task 8) plus the GitHub Actions workflow (Task 9) together form the canonical lint/test gate — pre-commit would only duplicate them and risks silently auto-modifying staged files.
 
 **Acceptance**
-- `git status` does **not** show `.env`, `PLAN.md`, `__pycache__/`, or `vault_init_output.txt` if those files exist locally.
-- `pre-commit --version` works after `pip install pre-commit` (host-level).
+- `git status` does **not** show `.env`, `__pycache__/`, or `vault_init_output.txt` if those files exist locally.
+- `.env.template` is shell-sourceable (`set -a; source .env.template; set +a` works without error).
 
 **Proposed commit message**
 ```
-chore: add repo hygiene (gitignore, env template, pre-commit config)
+chore: add repo hygiene (gitignore, env template)
 ```
 
 ---
@@ -80,7 +81,7 @@ chore: add repo hygiene (gitignore, env template, pre-commit config)
 - `setup.cfg` — `[isort]`, `[flake8]` (max-line-length 120, ignore `E203,W503` for black compatibility, exclude `.venv,frontend,dist,build`), `[mypy]` (`python_version = 3.14`, `strict_optional = True`, `disallow_untyped_defs = True`, ignore-missing-imports for known untyped libs).
 - `pytest.ini` — testpaths `tests`, addopts `-ra --strict-markers`, `pythonpath = .`, markers section.
 - `requirements.txt` — runtime deps pinned to known-good 3.14-compatible versions: `fastapi`, `uvicorn[standard]`, `sse-starlette`, `pydantic`, `pydantic-settings`, `psycopg[binary]`, `celery`, `kombu`, `hvac` (Vault), `prometheus-client`, `python-json-logger`, `httpx`, `tenacity`, `sentry-sdk` (optional).
-- `requirements-dev.txt` — `isort`, `black`, `flake8`, `mypy`, `bandit`, `vulture`, `pre-commit`, `ipython`.
+- `requirements-dev.txt` — `isort`, `black`, `flake8`, `mypy`, `bandit`, `vulture`, `ipython`.
 - `requirements-test.txt` — `pytest`, `pytest-asyncio`, `pytest-cov`, `coverage-badge`, `httpx` (already in runtime but pinning is fine), `pytest-postgresql` (if we end up wanting it; can defer).
 - `__metadata__.py` — `__version__ = "0.1.0"`, `__author__`, `__license__ = "MIT"`. No personal-identifying details inside the repo file.
 
