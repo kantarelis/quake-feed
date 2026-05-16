@@ -36,8 +36,8 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 1 | Root hygiene (`.gitignore`, `.env.template`) | ⬜ Not started | — |
-| 2 | Python tooling config (`pyproject.toml`, `setup.cfg`, `pytest.ini`, `requirements*.txt`, `__metadata__.py`) | ⬜ Not started | — |
+| 1 | Root hygiene (`.gitignore`, `.env.template`) | ✅ Done | `dca18b0` |
+| 2 | Python tooling config (`pyproject.toml`, `setup.cfg`, `pytest.ini`, `requirements*.txt`, `__metadata__.py`) | ✅ Done | `e4dd5fc` |
 | 3 | Directory skeleton (empty `__init__.py` packages) | ⬜ Not started | — |
 | 4 | Shared utilities (`functions/`) | ⬜ Not started | — |
 | 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ⬜ Not started | — |
@@ -47,52 +47,53 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 1.
+**Next:** Task 3.
 
 ---
 
-## Task 1 — Root hygiene
+## Task 1 — Root hygiene ✅
 
-**Why first.** Without `.gitignore` the very first commit could capture `.env`, `__pycache__/`, etc. Get the guard rails in before any other file.
+**Status:** Done · Commit `dca18b0`
 
-**Files created**
-- `.gitignore` — Python (`__pycache__`, `*.pyc`, `.venv`, `*.egg-info`, `dist`, `build`, `htmlcov`, `.coverage`, `.mypy_cache`, `.pytest_cache`), Node (`node_modules`, `frontend/dist`), tooling (`.idea`, `.vscode`), env/secrets (`.env`, `vault_init_output.txt`), generated artifacts (`database/schema.sql`).
-- `.env.template` — every variable the stack will reference, with safe local defaults: `ENVIRONMENT`, `APPLICATION_NAME`, `QUAKE_HOST_IP`, `QUAKE_BIND_PORT`, `DB_USERNAME`/`DB_PASSWORD`/`DB_NAME`/`DB_HOST`/`DB_PORT`, `LOGGER_NAME`/`LOGGER_LOG_LEVEL`/`LOKI_HOST`/`LOKI_PORT`, `PROMETHEUS_HOST`/`PROMETHEUS_PORT`/`GRAFANA_HOST`/`GRAFANA_PORT`/`GF_SECURITY_ADMIN_USER`/`GF_SECURITY_ADMIN_PASSWORD`, `RABBITMQ_HOST`/`RABBITMQ_USERNAME`/`RABBITMQ_PASSWORD`/`RABBITMQ_AMQP_PORT`/`RABBITMQ_MANAGEMENT_PORT`, `VAULT_HOST`/`VAULT_PORT`/`VAULT_DEV_ROOT_TOKEN_ID`/`VAULT_UNSEAL_KEYS`/`VAULT_TOKEN`.
+**Shipped**
+- `.gitignore` — Python (`__pycache__`, `*.pyc`, `.venv`, `*.egg-info`, `dist`, `build`, `htmlcov`, `.coverage`, `.mypy_cache`, `.pytest_cache`), Node (`node_modules`, `frontend/dist`), tooling (`.idea`, `.vscode`), env/secrets (`.env`, `.env.local`, `vault_init_output.txt`), generated artifacts (`database/schema.sql`), Docker overrides, editor/OS caches.
+- `.env.template` — 21 env vars grouped by service (runtime, backend, database, logger, prometheus, grafana, rabbitmq, vault), all with safe local-docker-compose defaults.
 
-> **Note.** Pre-commit hooks were considered and explicitly dropped. `make check` (Task 8) plus the GitHub Actions workflow (Task 9) together form the canonical lint/test gate — pre-commit would only duplicate them and risks silently auto-modifying staged files.
+**Verifications**
+- `git check-ignore -v` confirms `.env`, `vault_init_output.txt`, `database/schema.sql`, `__pycache__/`, `node_modules/`, `.venv/` are caught.
+- `set -a; source .env.template; set +a` parses cleanly.
 
-**Acceptance**
-- `git status` does **not** show `.env`, `__pycache__/`, or `vault_init_output.txt` if those files exist locally.
-- `.env.template` is shell-sourceable (`set -a; source .env.template; set +a` works without error).
-
-**Proposed commit message**
-```
-chore: add repo hygiene (gitignore, env template)
-```
+**Deviations from original plan**
+1. **Pre-commit hooks dropped.** Originally planned `.pre-commit-config.yaml` alongside `.gitignore`/`.env.template`. Removed after discussion: `make check` (Task 8) + GitHub Actions (Task 9) cover the same gate without duplicating tool versions or risking silent auto-modification of staged files. The "100% ownership of every diff" rule made pre-commit's auto-format-on-commit behavior a slight anti-pattern.
+2. **`PLAN.md` is now tracked in git** (originally listed in `.gitignore`). Decision: a public portfolio repo benefits from a permanent planned-vs-shipped record next to the code; cross-machine continuity and session resilience also argued for tracking. `CLAUDE.md` and `MASTER_PLAN.md` were updated to match; epic-complete handoff is now "archive `PLAN.md` to `docs/history/epic-NN-<slug>.md`" rather than delete.
 
 ---
 
-## Task 2 — Python tooling config
+## Task 2 — Python tooling config ✅
 
-**Why now.** Land tooling before code so every later commit can be linted/typed without retroactive churn.
+**Status:** Done · Commit `e4dd5fc`
 
-**Files created**
-- `pyproject.toml` — `[tool.black]` (line-length 120, `target-version = ["py314"]`), `[tool.isort]` (black profile, line-length 120), `[tool.bandit]` (skips empty, excludes `.venv`, `tests`, `dist`, `frontend`), `[tool.vulture]` (paths `["."]`, ignore decorators for `@celery_app.task` / `@*.connect`), `[tool.pyright]` (optional, mirrors mypy).
-- `setup.cfg` — `[isort]`, `[flake8]` (max-line-length 120, ignore `E203,W503` for black compatibility, exclude `.venv,frontend,dist,build`), `[mypy]` (`python_version = 3.14`, `strict_optional = True`, `disallow_untyped_defs = True`, ignore-missing-imports for known untyped libs).
-- `pytest.ini` — testpaths `tests`, addopts `-ra --strict-markers`, `pythonpath = .`, markers section.
-- `requirements.txt` — runtime deps pinned to known-good 3.14-compatible versions: `fastapi`, `uvicorn[standard]`, `sse-starlette` (deferred until Epic 6), `pydantic`, `pydantic-settings`, `psycopg[binary]`, `celery` (pulls `kombu` transitively), `hvac` (Vault), `prometheus-client`, `python-json-logger`, `httpx`, `tenacity`.
-- `requirements-dev.txt` — `isort`, `black`, `flake8`, `mypy`, `bandit`, `vulture`, `ipython`.
-- `requirements-test.txt` — `pytest`, `pytest-asyncio`, `pytest-cov`, `coverage-badge`, `httpx` (already in runtime but pinning is fine), `pytest-postgresql` (if we end up wanting it; can defer).
-- `__metadata__.py` — `__version__ = "0.1.0"`, `__author__`, `__license__ = "MIT"`. No personal-identifying details inside the repo file.
+**Shipped**
+- `pyproject.toml` — `[build-system]` (setuptools+wheel), `[tool.black]` (line-length 120, `target-version = ["py314"]`, exclude block), `[tool.bandit]` (excludes `.venv`, `tests`, `dist`, `build`, `frontend`), `[tool.vulture]` (paths `["."]`, ignore decorators for `@celery_app.task` / `@*.task` / `@*.connect`, min_confidence 80), `[tool.pyright]` (mirrors mypy for editor support).
+- `setup.cfg` — `[isort]` (black profile, line-length 120, `known_first_party = quake,database,functions,models`), `[flake8]` (max-line-length 120, ignore `E203,W503`, per-file `__init__.py:F401`), `[mypy]` (`python_version = 3.14`, strict + `ignore_missing_imports`), `[mypy-tests.*]` (relaxes `disallow_untyped_defs`).
+- `pytest.ini` — `testpaths = tests`, `pythonpath = .`, addopts `-ra --strict-markers --strict-config`, three markers (`unit`, `integration`, `manual`).
+- `requirements.txt` — exact `==` pins (FastAPI 0.136.1, Uvicorn 0.47.0, Pydantic 2.13.4, pydantic-settings 2.14.1, psycopg[binary] 3.3.4, Celery 5.6.3, hvac 2.4.0, prometheus-client 0.25.0, python-json-logger 4.1.0, httpx 0.28.1, tenacity 9.1.4).
+- `requirements-test.txt` — `-r requirements.txt` + linters (isort 8.0.1, black 26.3.1, flake8 7.3.0, mypy 2.1.0, bandit 1.9.4, vulture 2.16) + pytest stack (pytest 9.0.3, pytest-asyncio 1.3.0, pytest-cov 7.1.0, coverage-badge 1.1.2).
+- `requirements-dev.txt` — `-r requirements-test.txt` + `ipython 9.13.0`.
+- `__metadata__.py` — `__title__`, `__description__`, `__version__ = "0.1.0"`, `__license__ = "MIT"`. No personal-identifying details.
 
-**Acceptance**
-- `pip install -r requirements.txt -r requirements-dev.txt -r requirements-test.txt` succeeds in a fresh venv.
-- `isort --check .`, `black --check .`, `flake8 .`, `mypy .`, `bandit -r -c pyproject.toml .` all pass on the empty-ish repo.
+**Verifications (after user provisioned `.venv`)**
+- All five linters run clean from `.venv/bin/<tool>`: isort exit 0 (2 files skipped — configs), black exit 0 (1 file unchanged), flake8 exit 0 (no issues), mypy exit 0 (1 source file checked), bandit exit 0 (5 LoC scanned, 0 issues).
+- Installed tool versions match the pins exactly.
 
-**Proposed commit message**
-```
-chore: add python tooling config and pinned requirements (3.14)
-```
+**Deviations from original plan**
+1. **Exact `==` pins instead of `>=` floors.** User-driven choice during the task. Trades flexibility for full reproducibility.
+2. **Linters moved from `requirements-dev.txt` to `requirements-test.txt`.** User-driven. Rationale: CI runs them, and CI is a test concern. `requirements-dev.txt` now contains only `ipython` on top of test (which transitively pulls runtime). This means `make install-test` will give CI everything it needs without dragging in `ipython`.
+3. **`sentry-sdk` dropped entirely.** User decision: we won't use Sentry. Task 5's `config.py` scope was also amended to drop the planned Sentry init signal handler.
+4. **`sse-starlette` commented out in `requirements.txt`.** Deferred until Epic 6 actually needs it (avoids carrying an unused dep through the early epics). Will be uncommented in Epic 6.
+5. **`kombu` removed from explicit deps.** Celery pulls it transitively; no need to pin separately.
+6. **`pytest-postgresql` not included.** Deferred per the plan's own "if we end up wanting it" note.
+7. **`isort` config kept in `setup.cfg` only** (plan loosely listed it in both `pyproject.toml` and `setup.cfg`). Single source of truth.
 
 ---
 
