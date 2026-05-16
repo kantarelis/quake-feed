@@ -39,7 +39,7 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 1 | Root hygiene (`.gitignore`, `.env.template`) | ✅ Done | `dca18b0` |
 | 2 | Python tooling config (`pyproject.toml`, `setup.cfg`, `pytest.ini`, `requirements*.txt`, `__metadata__.py`) | ✅ Done | `e4dd5fc` |
 | 3 | Directory skeleton (empty `__init__.py` packages) | ✅ Done | `a8d08ca` |
-| 4 | Shared utilities (`functions/`) | ⬜ Not started | — |
+| 4 | Shared utilities (`functions/`) | ✅ Done | `eb540f7` |
 | 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ⬜ Not started | — |
 | 6 | Dockerfiles (`Dockerfile`, `Dockerfile-dev`, `Dockerfile-prometheus`) | ⬜ Not started | — |
 | 7 | Docker Compose + monitoring configs | ⬜ Not started | — |
@@ -47,7 +47,7 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 4.
+**Next:** Task 5.
 
 ---
 
@@ -115,25 +115,34 @@ None. Files and directory layout match the plan exactly.
 
 ---
 
-## Task 4 — Shared utilities (`functions/`)
+## Task 4 — Shared utilities (`functions/`) ✅
 
-**Why now.** The entrypoints (Task 5) import these; landing them first keeps Task 5 a pure wiring change.
+**Status:** Done · Commit `eb540f7`
 
-**Files created**
-- `functions/environment.py` — `EnvironmentalVariables` Pydantic Settings class with nested groups: `BackendConfig`, `DatabaseConfig`, `LoggerConfig`, `PrometheusConfig`, `GrafanaConfig`, `VaultConfig`, `RabbitMQConfig`. A `get_environmental_variables()` lru-cached accessor. Validates required vars at import-of-app time, not module import.
-- `functions/logger.py` — `setup_logger(name: str, app_name: str) -> logging.Logger` that wires a JSON formatter (`python-json-logger`) and a Loki handler when `LOKI_HOST` is reachable; otherwise stdout-only. Idempotent.
-- `functions/vault.py` — `VaultClient` (thin `hvac` wrapper) with `get_secret(path: str, key: str) -> str | None`, `put_secret`, `list_keys`. `init_vault(logger)` ensures the dev container is reachable and the KV mount `secret/` exists. No first-time-init heroics; Vault dev mode handles that.
-- `functions/scheduler.py` — tiny helper: `crontab_or_default(env_var: str, default: str)` for reading cron strings from env at Beat-schedule build time.
-- `functions/celery_metrics.py` — Prometheus counter/histogram registration for Celery task lifecycle (signal handlers on `task_prerun`, `task_postrun`, `task_failure`). Stub-quality at this stage; metrics get fleshed out in Epic 8.
+**Shipped**
+- `functions/environment.py` — `Environment` `StrEnum`; eight typed config models (`BackendConfig`, `DatabaseConfig`, `LoggerConfig`, `PrometheusConfig`, `GrafanaConfig`, `RabbitMQConfig`, `VaultConfig`, top-level `EnvironmentalVariables`); explicit `_require()` / `_load_from_env()` env reader; `get_environmental_variables()` `lru_cache`'d accessor that calls `EnvironmentalVariables.model_validate(_load_from_env())`. `VaultConfig` exposes `address` and `unseal_keys_list` properties.
+- `functions/logger.py` — `setup_logger(name, app_name, level)` returning a JSON-formatting stdout logger via `python-json-logger`'s `JsonFormatter(static_fields={"app": app_name})`. Idempotent via a `_quake_handler` marker attribute. Loki ship-side deferred to a promtail sidecar (Epic 8).
+- `functions/vault.py` — `VaultClient` wraps `hvac` for the KV v2 mount `secret/` (`get_secret`, `put_secret`, `list_keys`; `InvalidPath` returns sane empties). `init_vault(logger)` builds the client and warns on uninitialized/sealed/unreachable Vault without raising — caller decides whether to fail fast.
+- `functions/scheduler.py` — single helper `crontab_or_default(env_var, default) -> crontab` (5-field validation, defaults if env unset/empty).
+- `functions/celery_metrics.py` — `CELERY_TASK_TOTAL` Counter + `CELERY_TASK_DURATION_SECONDS` Histogram + signal handlers on `task_prerun` / `task_postrun` / `task_failure`. Counter increments in `task_postrun` using `state` kwarg; `task_failure` is a documented no-op hook point for Epic 8.
 
-**Acceptance**
-- `python -c "from functions.environment import get_environmental_variables; from functions.logger import setup_logger; from functions.vault import VaultClient"` succeeds.
-- `mypy functions/` is clean.
+**Plus config / docs changes that landed in the same commit:**
+- `CLAUDE.md` — Static Analysis Gate section rewritten: the no-suppression rule is now absolute (no escape hatches), with the three permitted fix paths spelled out (refactor / project-wide config / plugin or stub).
+- `setup.cfg` — added `plugins = pydantic.mypy` under `[mypy]` and a `[pydantic-mypy]` section (`init_forbid_extra = True`, `init_typed = True`, `warn_required_dynamic_aliases = True`).
 
-**Proposed commit message**
-```
-feat(functions): add env, logger, vault, scheduler, celery-metrics helpers
-```
+**Verifications**
+- All 5 linters pass across the whole repo (27 source files): isort exit 0, black 27 unchanged, flake8 exit 0, mypy 27 source files clean, bandit 0 issues at every severity.
+- **Pyright also clean: 0 errors, 0 warnings, 0 informations** (run via `npx --yes pyright --pythonpath .venv/bin/python`).
+- Plan's literal acceptance import line works: `from functions.environment import get_environmental_variables; from functions.logger import setup_logger; from functions.vault import VaultClient` (extended to all five modules; all succeed).
+- `grep -rnE '# *(type: *ignore|noqa|nosec|pragma: *no *cover|mypy: *ignore|fmt: *(off|on))' …` returns empty across the source tree.
+
+**Deviations from original plan**
+
+1. **`environment.py` is `BaseModel`-based, not `pydantic-settings`-based.** The plan called for `EnvironmentalVariables(BaseSettings)` with nested `BaseSettings` groups via `Field(default_factory=…)`. That structure made pyright fail (9 errors) because pyright reads pydantic's native stubs (no plugin equivalent to mypy's `pydantic.mypy`), and the synthesized `__init__` requires all fields — so `BackendConfig()` (no args) is a static error. To satisfy the no-suppression rule, the module was restructured: sub-configs are plain `BaseModel`, and a single explicit `_load_from_env()` builds a nested dict that `EnvironmentalVariables.model_validate(...)` validates. Env-reading is now visible code, not magic. `.env` loading is the caller's job (Makefile sources it locally; docker-compose injects via `env_file:`). Same public API (`env.backend.host`, `env.database.port`, …).
+2. **No in-process Loki HTTP handler.** Plan said "Loki handler when `LOKI_HOST` is reachable; otherwise stdout-only." Dropped the Loki HTTP path in favor of container-side log collection (the standard pattern: app logs JSON to stdout → promtail tails the docker log driver → ships to Loki). Cleaner, doesn't need a new dep. Promtail will be added to docker-compose in Epic 8.
+3. **No suppressions anywhere** — the user instated an absolute no-line-level-suppression rule mid-task. CLAUDE.md was updated to reflect it (committed in this same Task 4 commit). All `# type: ignore` and `# noqa` directives previously added were removed and replaced with real fixes (pydantic plugin for mypy; restructure for pyright; specific exception tuple in `vault.py` replacing the broad `except Exception` + `# noqa: BLE001`).
+4. **`pyright` is now part of the verification flow** (it wasn't in the original Task 4 acceptance). Currently invoked via `npx --yes pyright` for ad-hoc checks. It is **not yet wired into `make check` or CI** — open follow-up for Task 8 (Makefile) and Task 9 (CI) to lock it in as a hard gate.
+5. **`pydantic-settings` is now unused.** Still pinned in `requirements.txt`. Can be removed; left for the user to decide whether to drop in this commit's follow-up or later.
 
 ---
 
