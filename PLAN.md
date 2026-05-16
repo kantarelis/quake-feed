@@ -36,8 +36,8 @@ The database layer is implemented end-to-end without any business logic on top o
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 1 | dbmate config + baseline migration | ✅ Done | _pending_ |
-| 2 | Sandbox-test wiring (`make migrate-test` + CI job) | ⬜ Not started | — |
+| 1 | dbmate config + baseline migration | ✅ Done | `065ce98` |
+| 2 | Sandbox-test wiring (`make migrate-test` + CI job) | ✅ Done | `03c5af5` |
 | 3 | Connection layer + `ExtractTransformLoad` base (`database/main.py`) | ⬜ Not started | — |
 | 4 | Pydantic row models (`database/models.py`) | ⬜ Not started | — |
 | 5 | Events + Revisions ETLs (`database/etls/events.py`, `database/etls/revisions.py`) | ⬜ Not started | — |
@@ -46,13 +46,13 @@ The database layer is implemented end-to-end without any business logic on top o
 | 8 | Pretty-schema helper (`database/_pretty_schema.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 2.
+**Next:** Task 3.
 
 ---
 
 ## Task 1 — dbmate config + baseline migration ✅
 
-**Status:** Done · Commit _pending_
+**Status:** Done · Commit `065ce98`
 
 **Shipped** — 2 new files
 - `database/.dbmate.yml` — reference-only config. Pins `migrations_dir: ./database/migrations`, `schema_file: ./database/schema.sql`, `migrations_table_name: public.schema_migrations`. A comment in the file explains why the explicit `public.` qualifier matters (Postgres's default `search_path` against the `quake` DB user resolves the unqualified table name into the `quake` schema, which doesn't exist on first `dbmate up`). The Makefile still passes every flag explicitly per `CLAUDE.md` policy; this YAML is purely for editors/humans.
@@ -99,31 +99,86 @@ feat(db): add baseline migration creating quake schema, tables, and revision tri
 
 ---
 
-## Task 2 — Sandbox-test wiring (Makefile + CI)
+## Task 2 — Sandbox-test wiring (Makefile + CI) ✅
 
-**Why now.** A migration we can't validate cold-start + rollback is a migration we don't trust.
+**Status:** Done · Commit `03c5af5`
 
-**Files touched**
-- `makefile` — fill in `migrate-test`. Approach: a shell recipe that
-  1. starts a throwaway TimescaleDB container (`docker run -d --name quake_migrate_test ... -p 5433:5432 timescale/timescaledb:latest-pg18`),
-  2. waits for `pg_isready` (with a 30 s timeout),
-  3. runs `dbmate $(DBMATE_FLAGS) up` against `localhost:5433`,
-  4. runs `dbmate $(DBMATE_FLAGS) down` (rolls back the newest migration),
-  5. runs `dbmate $(DBMATE_FLAGS) up` again,
-  6. tears the container down via `trap` so failures still clean up.
-- `.github/workflows/code_quality_assurance.yml` — add a third job `migration-test`:
-  - `needs: check` (per the sequential pattern set in Epic 1's CI review).
-  - `services.postgres` = `timescale/timescaledb:latest-pg18` exposing `5432:5432` with `POSTGRES_USER/PASSWORD/DB` from env; healthcheck via `pg_isready`.
-  - Steps: checkout → install `dbmate` (the Go binary, pinned version) → `dbmate up` → `dbmate down` → `dbmate up`, all with explicit `DATABASE_URL` and `--migrations-table public.schema_migrations`.
+**Shipped** — 3 files modified (Makefile + CI workflow + sidecar compose fix)
 
-**Acceptance**
-- `make migrate-test` exits 0 on a clean machine (no leftover container even after failure).
-- The new CI job runs and goes green on a test push.
-- `make check` clean.
+### `makefile`
+- **`DBMATE` switched from local binary to Dockerized `amacneil/dbmate:latest`.** New variable block defines `DBMATE_IMAGE := amacneil/dbmate:latest` and `DBMATE := docker run --rm --network host -v $(PWD)/database:/db:rw -w /db -e DATABASE_URL $(DBMATE_IMAGE)`. Host no longer needs a local dbmate install.
+- **`DBMATE_FLAGS` extended** to `--migrations-dir /db/migrations --schema-file /db/schema.sql --migrations-table public.schema_migrations`. The first two flags override the host-relative paths in `.dbmate.yml` since the container's WORKDIR is `/db`.
+- **`db-migrate` and `db-schema` DB host changed `localhost` → `127.0.0.1`** (see "Bugs found during verification" below).
+- **`migrate-test` stub replaced** with the real recipe:
+  - `set -e` + `trap "docker rm -f quake_migrate_test …" EXIT` (so failures still clean up).
+  - `docker run -d --name quake_migrate_test … -p 5433:5432 timescale/timescaledb:latest-pg18`.
+  - Readiness loop: poll `docker exec quake_migrate_test pg_isready -h 127.0.0.1 -U quake -d quake-db` for up to 60 s (forces TCP-based check, not the local socket — see bugs below).
+  - `export DATABASE_URL=postgres://quake:quake@127.0.0.1:5433/quake-db?sslmode=disable`.
+  - `dbmate up` → `dbmate down` → `dbmate up`, each as a separate echoed step.
+  - Closing "Sandbox migration test PASSED." line.
+- **Section header rewrite** above the db section drops the "stubbed until Epic 2" wording.
 
-**Proposed commit message**
+### `.github/workflows/code_quality_assurance.yml`
+- **New `migration-test` job**, `needs: check` (parallel with `test`, sequential after `check`).
+- **`services.postgres`** = `timescale/timescaledb:latest-pg18` with `POSTGRES_USER/PASSWORD/DB` env, `ports: ["5432:5432"]`, healthcheck `pg_isready -U quake -d quake-db` every 5 s × 10 retries.
+- **Job-level `env.DATABASE_URL`** = `postgres://quake:quake@localhost:5432/quake-db?sslmode=disable`.
+- **Three explicit steps** for clear CI log readability:
+  - `dbmate up (cold start)`
+  - `dbmate down (roll back newest migration)`
+  - `dbmate up (re-apply newest migration)`
+- Each step uses `docker run --rm --network host -v "$PWD/database":/db:ro -e DATABASE_URL amacneil/dbmate:latest --migrations-dir /db/migrations --migrations-table public.schema_migrations <subcommand>` — mirrors the Makefile pattern so there's one source of truth for the dbmate version.
+
+### `docker-compose.yml` (sidecar fix — not part of the plan but blocked the user)
+- **`postgres-db` volume mount changed `pgdata:/var/lib/postgresql/data` → `pgdata:/var/lib/postgresql`.** Required by the pg18+ docker image's new `pg_ctlcluster` layout. Failing with:
+  > In 18+, these Docker images are configured to store database data in a format which is compatible with `pg_ctlcluster` … place a single mount at `/var/lib/postgresql`.
+- Inline comment in the YAML explains the layout change.
+- **Operator action required**: drop the old `quake-feed_pgdata` volume (`docker volume rm quake-feed_pgdata` or `make full-clean`) so pg18 can initialize fresh under `/var/lib/postgresql/18/main/`.
+
+**Verifications**
+- `make check` — clean (6 linters, exit 0).
+- YAML structure: `jobs: ['check', 'test', 'migration-test']`; `test: needs=check, steps=4, services=-`; `migration-test: needs=check, steps=4, services=['postgres']`.
+- **`make migrate-test` end-to-end**:
+  ```
+  DB ready after 4s.
+  dbmate up (cold start)        → Applied in 25.7 ms
+  dbmate down                   → Rolled back in 45.5 ms
+  dbmate up (re-apply)          → Applied in 26.3 ms
+  Sandbox migration test PASSED.
+  ```
+  Cleanup verified — `docker ps -a --filter name=quake_migrate_test` returns nothing. `database/schema.sql` was produced (side effect of any dbmate up/down) and `git check-ignore -v` confirms it stays out of commits.
+- `docker compose config` validates with the new pg18 mount; `postgres-db.volumes.target` resolves to `/var/lib/postgresql`.
+
+**Bugs found during verification (all fixed inline in this task)**
+
+1. **IPv4 vs IPv6 mismatch.** First run got `connection reset by peer` against `localhost:5433`. `--network host` containers resolve `localhost` to `::1` (IPv6) but Docker's `-p 5433:5432` publishes IPv4 only. **Fix:** all `DATABASE_URL`s now use `127.0.0.1`.
+2. **False-positive readiness.** Second run got `connection reset by peer` again at the dbmate step. Root cause: TimescaleDB's docker entrypoint starts a transient postgres in **local-socket-only** mode to apply initdb scripts, then **shuts it down and restarts** on TCP. The first `pg_isready` (default: local socket) returned true during that transient phase; by the time dbmate tried to connect, postgres was mid-restart and reset the connection. **Fix:** `pg_isready -h 127.0.0.1` forces a TCP-based check, which only succeeds after the post-initdb restart (~4 s on this host instead of the original false-positive 2 s).
+3. **Error masking by trailing echo.** First failure exited 0 because the recipe's final `echo "PASSED"` ran regardless. **Fix:** `set -e` at the top of the recipe so any failing step aborts.
+
+**Deviations from original plan**
+
+1. **CI uses Dockerized dbmate instead of a curl-installed binary.** Plan said "install dbmate (the Go binary, pinned version)". Switched to `docker run amacneil/dbmate:latest` for one-source-of-truth alignment with the Makefile. No `/usr/local/bin/dbmate` install step in the workflow.
+2. **dbmate image is `:latest`, not pinned.** Plan implied a pinned version; not done yet because we haven't settled on which version to lock to. Filed as a follow-up.
+3. **Sidecar compose fix shipped in this task** (pg18 volume mount). Not in the plan's task scope — surfaced when the user tried `docker compose up` while we were working. Easy to split into a separate `fix(compose): …` commit if you prefer one-task-one-commit purity; otherwise it folds in here.
+
+**Open follow-ups**
+- (Carry-over) `pydantic-settings` still pinned but unused.
+- (Carry-over) Decide whether to purge `build-essential` from the Dockerfile.
+- **(New, Task 2)** Pin `amacneil/dbmate` Docker image to a specific version (Makefile and CI both).
+
+**Proposed commit message (bundled)**
 ```
 ci(db): wire sandbox migrate-test target and CI job for migrations
+
+Also fixes the pg18 docker-compose volume mount to use /var/lib/postgresql
+per the new pg_ctlcluster layout.
+```
+
+**Proposed commit messages (split)**
+```
+ci(db): wire sandbox migrate-test target and CI job for migrations
+```
+```
+fix(compose): mount postgres-db pgdata at /var/lib/postgresql for pg18
 ```
 
 ---
