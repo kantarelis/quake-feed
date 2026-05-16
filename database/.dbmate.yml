@@ -1,0 +1,18 @@
+# dbmate configuration reference.
+#
+# This file is NOT loaded automatically by dbmate (the Makefile passes every
+# flag dbmate needs explicitly — see the `db-migrate`, `migrate-test`, and
+# `db-schema` targets). It exists for editor plugins (e.g., VS Code dbmate
+# extensions) and as a single place to read the canonical dbmate settings.
+#
+# Why explicit flags in the Makefile rather than reliance on this file:
+# Postgres's default `search_path` is `"$user", public`. Our DB user is
+# `quake` and the baseline creates a `quake` schema, so dbmate's default
+# table location (`schema_migrations` inside the first schema in the path)
+# resolves to `quake.schema_migrations` on a fresh DB — which doesn't exist
+# yet on first `dbmate up`. Pinning `migrations_table_name` to
+# `public.schema_migrations` avoids that bootstrap failure.
+
+migrations_dir: ./database/migrations
+schema_file: ./database/schema.sql
+migrations_table_name: public.schema_migrations
