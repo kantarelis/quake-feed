@@ -41,7 +41,7 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 3 | Directory skeleton (empty `__init__.py` packages) | ✅ Done | `a8d08ca` |
 | 4 | Shared utilities (`functions/`) | ✅ Done | `eb540f7` |
 | 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ⬜ Not started | — |
-| 6 | Dockerfiles (`Dockerfile`, `Dockerfile-dev`, `Dockerfile-prometheus`) | ⬜ Not started | — |
+| 6 | Dockerfile (single image for backend + worker + beat) | ⬜ Not started | — |
 | 7 | Docker Compose + monitoring configs | ⬜ Not started | — |
 | 8 | Makefile | ⬜ Not started | — |
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
@@ -169,23 +169,23 @@ feat: add FastAPI entrypoint with /health and Manager/Views scaffold
 
 ---
 
-## Task 6 — Dockerfiles
+## Task 6 — Dockerfile
 
 **Why now.** The app runs locally; package it before Compose can use it.
 
+**One image, used by three services.** The backend, Celery worker, and Celery beat all run the same code — only the command differs. One `Dockerfile` is enough; docker-compose picks the entrypoint per service. Prometheus uses the official upstream image with our scrape config mounted in (Task 7), so no custom Prometheus image is needed.
+
 **Files created**
-- `Dockerfile` — production image. `python:3.14-slim` base, system deps for `psycopg` (`libpq-dev`, `build-essential`), copy `requirements.txt`, `pip install`, copy source, non-root `appuser`, `CMD ["python", "__main__.py"]`.
-- `Dockerfile-dev` — dev image. Same base, installs `requirements-dev.txt` + `requirements-test.txt` on top of runtime, leaves source mounted via volume in Compose (no `COPY .` for the app code).
-- `Dockerfile-prometheus` — Prometheus image with `monitoring/prometheus.yml` baked in. Tiny, just `FROM prom/prometheus:v2.46.0` + `COPY monitoring/prometheus.yml /etc/prometheus/prometheus.yml`.
+- `Dockerfile` — single image. `python:3.14-slim` base, system deps for `psycopg` (`libpq-dev`, `build-essential`), copy `requirements-dev.txt` + `pip install` (pulls runtime + test + linters via the cascading `-r` chain), copy source, non-root `appuser`, `CMD ["python", "__main__.py"]`. Worker / beat override the command in docker-compose. Local-only project, so installing the dev/test stack into the image keeps `make test` runnable in-container without juggling two images.
 
 **Acceptance**
-- `docker build -t quake-feed:dev -f Dockerfile-dev .` succeeds.
-- `docker build -t quake-feed:prod -f Dockerfile .` succeeds.
-- `docker build -t quake-prometheus -f Dockerfile-prometheus .` succeeds (requires `monitoring/prometheus.yml`, which Task 7 creates — so this docker-build acceptance check may be deferred to after Task 7; just verify the Dockerfile parses with `docker build --check` or `hadolint` if available).
+- `docker build -t quake-feed .` succeeds.
+- Image size is reasonable (`docker images quake-feed` — expect somewhere under ~600 MB with the dev/test stack included).
+- `docker run --rm --entrypoint python quake-feed -c "import quake; import functions; print('OK')"` exits 0 (image is importable; no startup runs because env vars aren't set).
 
 **Proposed commit message**
 ```
-build: add Dockerfiles for backend (prod + dev) and Prometheus
+build: add Dockerfile (single image for backend, worker, beat)
 ```
 
 ---
@@ -195,7 +195,7 @@ build: add Dockerfiles for backend (prod + dev) and Prometheus
 **Why now.** Images exist; orchestrate them.
 
 **Files created**
-- `docker-compose.yml` — services: `backend` (uses `Dockerfile-dev`, mounts the source), `celery_worker` (same image, runs `celery -A config.celery_app worker`), `celery_beat` (same image, runs `celery -A config.celery_app beat`), `postgres` (`timescale/timescaledb:latest-pg18`), `rabbitmq` (`rabbitmq:3-management`), `vault` (`hashicorp/vault:1.21.1` in dev mode), `prometheus` (uses `Dockerfile-prometheus`), `grafana`, `loki`. One `quake_platform` network. Named volumes: `pgdata`, `loki-data`, `grafana-data`, `vault-data`. Env-var-driven ports.
+- `docker-compose.yml` — services: `backend` (uses the single `Dockerfile`, optionally mounts the source via a `volumes:` entry for live-reload), `celery_worker` (same image, runs `celery -A config.celery_app worker`), `celery_beat` (same image, runs `celery -A config.celery_app beat`), `postgres` (`timescale/timescaledb:latest-pg18`), `rabbitmq` (`rabbitmq:3-management`), `vault` (`hashicorp/vault:1.21.1` in dev mode), `prometheus` (`prom/prometheus:v2.46.0` upstream — `monitoring/prometheus.yml` mounted in via `volumes:`), `grafana`, `loki`. One `quake_platform` network. Named volumes: `pgdata`, `loki-data`, `grafana-data`, `vault-data`. Env-var-driven ports.
 - `monitoring/prometheus.yml` — scrape configs: backend on `:8000/metrics`, celery-worker on `:8001/metrics`.
 - `monitoring/loki-config.yml` — minimal Loki config (single-binary, filesystem storage).
 - `monitoring/grafana/provisioning/datasources/datasources.yml` — Prometheus + Loki datasources.

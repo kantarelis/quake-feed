@@ -121,8 +121,7 @@ config.py                    # Celery app instance (`from config import celery_a
 __main__.py                  # Application entry point
 __metadata__.py              # Project metadata (version, authors, license)
 docker-compose.yml           # Backend, worker, beat, postgres+timescale, rabbitmq, vault, prometheus, grafana, loki
-Dockerfile / Dockerfile-dev  # Production / dev images for backend+worker+beat
-Dockerfile-prometheus        # Prometheus image with our scrape config baked in
+Dockerfile                   # Single image for backend + worker + beat (all share the same code)
 makefile                     # All dev/ops entrypoints
 .env.template                # Reference env file
 pyproject.toml / setup.cfg   # Tool configs (black, isort, flake8, mypy, bandit, vulture)

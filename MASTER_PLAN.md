@@ -45,7 +45,7 @@ The workflow exists so the user retains **100% ownership** of every commit. Full
 - Directory skeleton matching the structure in `CLAUDE.md`.
 - `pyproject.toml`, `setup.cfg`, `pytest.ini` with tool configs (line length 120, py314, black/isort/flake8/mypy/bandit/vulture).
 - `requirements.txt`, `requirements-dev.txt`, `requirements-test.txt`.
-- `docker-compose.yml` with all services and named volumes; `Dockerfile` + `Dockerfile-dev` + `Dockerfile-prometheus`.
+- `docker-compose.yml` with all services and named volumes; one `Dockerfile` (shared by backend, worker, beat).
 - `makefile` with every target listed in `CLAUDE.md` (dev/test/check/format/up/down/migrate/vault).
 - `.env.template` and `make install-env`.
 - `__main__.py`, `__metadata__.py`, `config.py` (Celery app), `quake/main.py` (stub FastAPI app with one health endpoint).
