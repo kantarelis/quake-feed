@@ -178,8 +178,13 @@ This is the **default workflow for every epic** in this repo. The workflow exist
 ### Static Analysis Gate
 
 - **Always run `make check` after completing a feature or fix** — runs isort, black, flake8, mypy, bandit.
-- Fix all issues reported by these tools before considering work complete; do not suppress warnings with `# nosec`, `# type: ignore`, `# noqa`, etc. unless there is a genuine, documented reason.
-- Prefer refactoring code to satisfy the linter over adding exceptions (e.g., use `ANY(%s)` instead of f-string SQL to satisfy bandit B608).
+- Fix all issues reported by these tools before considering work complete.
+- **Never suppress diagnostics at the line level.** The following directives are forbidden anywhere in the codebase, no exceptions: `# type: ignore`, `# noqa`, `# nosec`, `# pragma: no cover`, `# mypy: ignore-errors`, `# fmt: off/on`, or any equivalent silencer for any tool we run. This rule is absolute — "but it's a false positive" is not a justification.
+- When a tool flags something, the fix is one of:
+  1. **Refactor the code** so the diagnostic no longer applies (e.g. use `ANY(%s)` instead of f-string SQL to satisfy bandit B608; rename a function whose name `vulture` flags as unused).
+  2. **Adjust the tool's project-wide config** in `pyproject.toml` / `setup.cfg` (e.g. add a stub-less library to `[mypy]` `ignore_missing_imports`, exclude a generated file from `[tool.vulture]`).
+  3. **Install a plugin or stub** that teaches the tool about the runtime semantics it's misunderstanding (e.g. `plugins = pydantic.mypy` for Pydantic-aware `__init__` typing; `types-*` stub packages from typeshed).
+- If none of those three options works, the design is wrong — change it rather than silence the tool.
 
 ### Python Style
 
