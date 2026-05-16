@@ -1,0 +1,17 @@
+# Test dependencies. Pulls in runtime so a test venv is self-contained.
+-r requirements.txt
+
+
+# --- Static analysis ---
+isort==8.0.1
+black==26.3.1
+flake8==7.3.0
+mypy==2.1.0
+bandit==1.9.4
+vulture==2.16
+
+# --- Testing ---
+pytest==9.0.3
+pytest-asyncio==1.3.0
+pytest-cov==7.1.0
+coverage-badge==1.1.2

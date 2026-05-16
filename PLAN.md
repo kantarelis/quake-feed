@@ -80,7 +80,7 @@ chore: add repo hygiene (gitignore, env template)
 - `pyproject.toml` — `[tool.black]` (line-length 120, `target-version = ["py314"]`), `[tool.isort]` (black profile, line-length 120), `[tool.bandit]` (skips empty, excludes `.venv`, `tests`, `dist`, `frontend`), `[tool.vulture]` (paths `["."]`, ignore decorators for `@celery_app.task` / `@*.connect`), `[tool.pyright]` (optional, mirrors mypy).
 - `setup.cfg` — `[isort]`, `[flake8]` (max-line-length 120, ignore `E203,W503` for black compatibility, exclude `.venv,frontend,dist,build`), `[mypy]` (`python_version = 3.14`, `strict_optional = True`, `disallow_untyped_defs = True`, ignore-missing-imports for known untyped libs).
 - `pytest.ini` — testpaths `tests`, addopts `-ra --strict-markers`, `pythonpath = .`, markers section.
-- `requirements.txt` — runtime deps pinned to known-good 3.14-compatible versions: `fastapi`, `uvicorn[standard]`, `sse-starlette`, `pydantic`, `pydantic-settings`, `psycopg[binary]`, `celery`, `kombu`, `hvac` (Vault), `prometheus-client`, `python-json-logger`, `httpx`, `tenacity`, `sentry-sdk` (optional).
+- `requirements.txt` — runtime deps pinned to known-good 3.14-compatible versions: `fastapi`, `uvicorn[standard]`, `sse-starlette` (deferred until Epic 6), `pydantic`, `pydantic-settings`, `psycopg[binary]`, `celery` (pulls `kombu` transitively), `hvac` (Vault), `prometheus-client`, `python-json-logger`, `httpx`, `tenacity`.
 - `requirements-dev.txt` — `isort`, `black`, `flake8`, `mypy`, `bandit`, `vulture`, `ipython`.
 - `requirements-test.txt` — `pytest`, `pytest-asyncio`, `pytest-cov`, `coverage-badge`, `httpx` (already in runtime but pinning is fine), `pytest-postgresql` (if we end up wanting it; can defer).
 - `__metadata__.py` — `__version__ = "0.1.0"`, `__author__`, `__license__ = "MIT"`. No personal-identifying details inside the repo file.
@@ -150,7 +150,7 @@ feat(functions): add env, logger, vault, scheduler, celery-metrics helpers
 **Why now.** With `functions/` in place, this task wires a runnable FastAPI process. After this commit, `python -m` should boot the app to `/health` even without Docker.
 
 **Files created**
-- `config.py` — top-level Celery app instance (`celery_app = Celery(...)`); empty `beat_schedule` placeholder; broker URL composed from env. Beat-init/worker-init signal handlers (Sentry init stub, deferred publisher seeding stub) that are no-ops for now but match the shape we'll need.
+- `config.py` — top-level Celery app instance (`celery_app = Celery(...)`); empty `beat_schedule` placeholder; broker URL composed from env. No signal handlers needed at this stage; tasks register on first task definition in Epic 3.
 - `quake/main.py` — `Quake` class with `__init__(self, logger)` and `run(host, port)` (calls `uvicorn.run`). `__init__` builds the FastAPI app, mounts the single `MainManager` from `quake/api/main/`. Manager-Views pattern is in place from day one so we don't refactor later.
 - `quake/api/main/main.py` — `MainManager` (owns `APIRouter()`, instantiates `MainManagerViews`, registers `/health` route).
 - `quake/api/main/views.py` — `MainManagerViews` with a single async `health()` returning `{"status": "ok", "service": "quake-feed", "version": __version__}`.

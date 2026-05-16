@@ -1,0 +1,6 @@
+# Dev dependencies. Pulls in test (which pulls in runtime) so `make install-dev`
+# gives you a fully functional environment in one shot.
+-r requirements-test.txt
+
+# --- Interactive shell ---
+ipython==9.13.0
