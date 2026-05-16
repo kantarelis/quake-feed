@@ -40,14 +40,14 @@ Tasks are ordered so each commit leaves the repo in a sensible state:
 | 2 | Python tooling config (`pyproject.toml`, `setup.cfg`, `pytest.ini`, `requirements*.txt`, `__metadata__.py`) | ✅ Done | `e4dd5fc` |
 | 3 | Directory skeleton (empty `__init__.py` packages) | ✅ Done | `a8d08ca` |
 | 4 | Shared utilities (`functions/`) | ✅ Done | `eb540f7` |
-| 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ⬜ Not started | — |
+| 5 | App entrypoints (`config.py`, `quake/main.py`, `quake/api/main/`, `__main__.py`) | ✅ Done | `eb2c9aa` |
 | 6 | Dockerfile (single image for backend + worker + beat) | ⬜ Not started | — |
 | 7 | Docker Compose + monitoring configs | ⬜ Not started | — |
 | 8 | Makefile | ⬜ Not started | — |
 | 9 | CI workflow (`.github/workflows/code_quality_assurance.yml`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 5.
+**Next:** Task 6.
 
 ---
 
@@ -146,21 +146,37 @@ None. Files and directory layout match the plan exactly.
 
 ---
 
-## Task 5 — App entrypoints
+## Task 5 — App entrypoints ✅
 
-**Why now.** With `functions/` in place, this task wires a runnable FastAPI process. After this commit, `python -m` should boot the app to `/health` even without Docker.
+**Status:** Done · Commit `eb2c9aa`
 
-**Files created**
-- `config.py` — top-level Celery app instance (`celery_app = Celery(...)`); empty `beat_schedule` placeholder; broker URL composed from env. No signal handlers needed at this stage; tasks register on first task definition in Epic 3.
-- `quake/main.py` — `Quake` class with `__init__(self, logger)` and `run(host, port)` (calls `uvicorn.run`). `__init__` builds the FastAPI app, mounts the single `MainManager` from `quake/api/main/`. Manager-Views pattern is in place from day one so we don't refactor later.
-- `quake/api/main/main.py` — `MainManager` (owns `APIRouter()`, instantiates `MainManagerViews`, registers `/health` route).
-- `quake/api/main/views.py` — `MainManagerViews` with a single async `health()` returning `{"status": "ok", "service": "quake-feed", "version": __version__}`.
-- `quake/api/main/models.py` — `HealthResponse` Pydantic model.
-- `__main__.py` — bootstrap: loads env, sets up logger, (optionally) pings Vault, constructs `Quake(logger)`, calls `.run(host, port)`.
+**Shipped** — 6 new files
+- `config.py` — `celery_app = Celery(_env.application_name, broker=BROKER_URL)`. `BROKER_URL` is composed from `RABBITMQ_*` env vars (`amqp://user:pass@host:port//` — double slash = default vhost). Conf: `timezone="UTC"`, `enable_utc=True`, `task_acks_late=True`, `worker_prefetch_multiplier=1`, `beat_schedule={}`. No signal handlers / no task registration (deferred to Epic 3).
+- `quake/api/main/models.py` — `HealthResponse(status: str, service: str, version: str)`.
+- `quake/api/main/views.py` — `MainManagerViews.__init__(logger)` + `async health() -> HealthResponse` returning `HealthResponse(status="ok", service=__title__, version=__version__)`. Pulls identity from `__metadata__` rather than hard-coding the string.
+- `quake/api/main/main.py` — `MainManager(logger=None)` (defaults to `logging.getLogger("MainManager")` per the `CLAUDE.md` pattern). Owns `APIRouter()`, instantiates `MainManagerViews`, and `run()` wires `/health` via `add_api_route` (full OpenAPI metadata: summary, description, operation_id, tags) before returning the router.
+- `quake/main.py` — `Quake(logger)` builds `FastAPI(title=__title__, description=__description__, version=__version__)`, calls `_mount_routers()` which constructs `MainManager` and `include_router(main_manager.run())`. `run(host, port)` logs an "Starting quake-feed" line with structured extras and calls `uvicorn.run(self.app, host=host, port=port)`.
+- `__main__.py` — `main()` calls `get_environmental_variables()` → `setup_logger(name, app_name, level)` → `init_vault(logger)` (fire-and-forget; the client return is discarded, the warning side-effects are what matter at boot) → `Quake(logger).run(host, port)`. Guarded by `if __name__ == "__main__": main()`.
 
-**Acceptance**
-- `python __main__.py` starts the server on `0.0.0.0:8000` (or whatever `.env` says) and `curl localhost:8000/health` returns the JSON.
-- `make check`-equivalent (manual isort/black/flake8/mypy/bandit) passes.
+**Verifications**
+- All 5 linters clean across 33 source files: isort exit 0 (3 files skipped — configs), black 33 unchanged, flake8 exit 0, mypy 33 source files / 0 issues, bandit 0 issues at every severity (398 LoC scanned).
+- **Pyright clean**: 0 errors, 0 warnings, 0 informations.
+- **No suppressions**: `grep -rnE '# *(type: *ignore|noqa|nosec|pragma: *no *cover|mypy: *ignore|fmt: *(off|on))'` across `.py` files (excluding `.venv` / `.mypy_cache`) returns empty.
+- **Server boot**: `set -a; source .env; set +a; .venv/bin/python __main__.py` brought Uvicorn up on `0.0.0.0:8000`.
+  - `curl localhost:8000/health` → `{"status":"ok","service":"quake-feed","version":"0.1.0"}` (HTTP 200).
+  - `curl localhost:8000/docs` → HTTP 200 (auto-generated OpenAPI UI).
+  - First two stdout lines are JSON, e.g. `{"timestamp":"…","level":"INFO","logger":"quake-feed-logger","message":"Starting quake-feed","app":"quake-feed","host":"0.0.0.0","port":8000}` — confirms the JSON formatter and the `app` static field are in effect.
+  - `init_vault` emitted a single `WARNING` because the Vault container isn't running (no DNS for `vault:8200`) and continued without raising — the fail-soft contract from Task 4 works in the boot path.
+
+**Deviations from original plan**
+None of structural significance. One minor judgment call documented for posterity:
+
+1. **`MainManager.__init__` accepts `Optional[logging.Logger]`** and falls back to `logging.getLogger("MainManager")`. The plan didn't pin the signature; I matched the `EventsManager` example in `CLAUDE.md` so future managers (Epic 2+) stay consistent. `Quake` always passes a real logger in, so the fallback is only ever used in standalone unit tests of the manager.
+2. **Identity strings in `health()` come from `__metadata__`** (`__title__`, `__version__`) rather than the literal `"quake-feed"` string the plan showed. Single source of truth — bumping `__version__` is reflected in `/health` automatically.
+
+**Open follow-ups (unchanged from Task 4 — not introduced here)**
+- `pyright` is still run ad-hoc via `npx`; locking it into `make check` / CI is slated for Tasks 8 and 9.
+- `pydantic-settings` is still pinned in `requirements.txt` despite being unused after the Task 4 refactor.
 
 **Proposed commit message**
 ```
