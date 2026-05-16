@@ -36,7 +36,7 @@ The database layer is implemented end-to-end without any business logic on top o
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 1 | dbmate config + baseline migration | ⬜ Not started | — |
+| 1 | dbmate config + baseline migration | ✅ Done | _pending_ |
 | 2 | Sandbox-test wiring (`make migrate-test` + CI job) | ⬜ Not started | — |
 | 3 | Connection layer + `ExtractTransformLoad` base (`database/main.py`) | ⬜ Not started | — |
 | 4 | Pydantic row models (`database/models.py`) | ⬜ Not started | — |
@@ -46,36 +46,51 @@ The database layer is implemented end-to-end without any business logic on top o
 | 8 | Pretty-schema helper (`database/_pretty_schema.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 1.
+**Next:** Task 2.
 
 ---
 
-## Task 1 — dbmate config + baseline migration
+## Task 1 — dbmate config + baseline migration ✅
 
-**Why first.** The schema is the contract everything below consumes.
+**Status:** Done · Commit _pending_
 
-**Files created**
-- `database/.dbmate.yml` — reference config: `migrations_dir: ./database/migrations`, `schema_file: ./database/schema.sql`, `migrations_table_name: public.schema_migrations`. Flags are still passed explicitly from the Makefile (`CLAUDE.md` policy), so the YAML is purely documentation/aid-to-editors.
-- `database/migrations/YYYYMMDDHHMMSS_baseline.sql` — single dbmate file with `-- migrate:up` and `-- migrate:down` blocks. Inside `migrate:up`:
-  - `CREATE SCHEMA IF NOT EXISTS quake`.
-  - `CREATE EXTENSION IF NOT EXISTS timescaledb`.
-  - `quake.events` table — `event_id TEXT`, `time TIMESTAMPTZ`, `magnitude DOUBLE PRECISION`, `magnitude_type TEXT`, `depth_km DOUBLE PRECISION`, `latitude DOUBLE PRECISION`, `longitude DOUBLE PRECISION`, `place TEXT`, `status TEXT`, `tsunami BOOLEAN`, `url TEXT`, `inserted_at TIMESTAMPTZ DEFAULT now()`, `updated_at TIMESTAMPTZ DEFAULT now()`. `PRIMARY KEY (event_id, time)` (Timescale requirement — partitioning column must be part of every uniqueness constraint). Then `SELECT create_hypertable('quake.events', 'time', if_not_exists => TRUE)`.
-  - `quake.event_revisions` table — append-only history: `id BIGSERIAL PRIMARY KEY`, `event_id TEXT NOT NULL`, `observed_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `old_magnitude`, `new_magnitude`, `old_depth_km`, `new_depth_km`, `old_place`, `new_place`. Index on `(event_id, observed_at DESC)`.
-  - `quake.api_keys` table — `id BIGSERIAL PRIMARY KEY`, `key_hash TEXT NOT NULL UNIQUE`, `label TEXT`, `scopes TEXT[] NOT NULL DEFAULT '{}'`, `created_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `last_seen_at TIMESTAMPTZ`, `revoked_at TIMESTAMPTZ`. (Raw keys live in Vault; the table stores hashes only — `CLAUDE.md` § Auth.)
-  - `quake.alert_filters` table — `id BIGSERIAL PRIMARY KEY`, `api_key_id BIGINT NOT NULL REFERENCES quake.api_keys(id) ON DELETE CASCADE`, `min_magnitude DOUBLE PRECISION`, `bbox_min_lat`, `bbox_min_lon`, `bbox_max_lat`, `bbox_max_lon`, `center_lat`, `center_lon`, `radius_km`, `created_at`, `updated_at`. Filter type is enforced application-side (bbox XOR center+radius); no DB check constraint yet.
-  - `quake.endpoint_locks` table — `lock_name TEXT PRIMARY KEY`, `is_locked BOOLEAN NOT NULL DEFAULT false`, `locked_by TEXT`, `locked_at TIMESTAMPTZ`, `reason TEXT`. Pre-seeded row: `INSERT INTO quake.endpoint_locks (lock_name) VALUES ('INGESTION_LOCK') ON CONFLICT DO NOTHING`.
-  - `quake.ingestion_runs` table — `id BIGSERIAL PRIMARY KEY`, `started_at TIMESTAMPTZ NOT NULL DEFAULT now()`, `finished_at TIMESTAMPTZ`, `inserted_count INTEGER NOT NULL DEFAULT 0`, `updated_count INTEGER NOT NULL DEFAULT 0`, `revision_count INTEGER NOT NULL DEFAULT 0`, `error TEXT`. Index on `started_at DESC`.
-  - **Revision trigger** — `CREATE OR REPLACE FUNCTION quake.events_record_revision()` (PL/pgSQL) that on `AFTER UPDATE ON quake.events FOR EACH ROW` writes to `quake.event_revisions` when `abs(NEW.magnitude - OLD.magnitude) >= 0.1` OR `abs(NEW.depth_km - OLD.depth_km) >= 1.0` OR `NEW.place IS DISTINCT FROM OLD.place`. Thresholds inlined in the function body (per `CLAUDE.md`: "defined in a migration").
+**Shipped** — 2 new files
+- `database/.dbmate.yml` — reference-only config. Pins `migrations_dir: ./database/migrations`, `schema_file: ./database/schema.sql`, `migrations_table_name: public.schema_migrations`. A comment in the file explains why the explicit `public.` qualifier matters (Postgres's default `search_path` against the `quake` DB user resolves the unqualified table name into the `quake` schema, which doesn't exist on first `dbmate up`). The Makefile still passes every flag explicitly per `CLAUDE.md` policy; this YAML is purely for editors/humans.
+- `database/migrations/20260516170000_baseline.sql` — single dbmate migration containing both `-- migrate:up` and `-- migrate:down` blocks. `migrate:up` ships:
+  - `CREATE EXTENSION IF NOT EXISTS timescaledb` + `CREATE SCHEMA IF NOT EXISTS quake`.
+  - `quake.events` — every column the plan listed (`event_id`, `time`, `magnitude`, `magnitude_type`, `depth_km`, `latitude`, `longitude`, `place`, `status`, `tsunami`, `url`, `inserted_at`, `updated_at`) with `PRIMARY KEY (event_id, time)`. Followed by `SELECT create_hypertable('quake.events', 'time', if_not_exists => TRUE)` and two indexes (`magnitude`, `(latitude, longitude)`).
+  - `quake.event_revisions` — append-only audit (`id BIGSERIAL PRIMARY KEY`, `event_id`, `observed_at`, `old_*`, `new_*` for magnitude / depth_km / place) with index on `(event_id, observed_at DESC)`.
+  - `quake.api_keys` — hash-only registry (`id`, `key_hash UNIQUE`, `label`, `scopes TEXT[]`, `created_at`, `last_seen_at`, `revoked_at`).
+  - `quake.alert_filters` — `api_key_id` FK with `ON DELETE CASCADE`, both bbox columns and center+radius columns (filter shape enforced application-side); index on `api_key_id`.
+  - `quake.endpoint_locks` — `(lock_name TEXT PRIMARY KEY, is_locked BOOLEAN, locked_by, locked_at, reason)`; pre-seeded `INGESTION_LOCK` row via `INSERT ... ON CONFLICT DO NOTHING`.
+  - `quake.ingestion_runs` — observability log with counts + error column and an index on `started_at DESC`.
+  - **Revision trigger** — `quake.events_record_revision()` (PL/pgSQL) fires `AFTER UPDATE ON quake.events FOR EACH ROW`. Writes a row to `quake.event_revisions` when `|NEW.magnitude - OLD.magnitude| >= 0.1` OR `|NEW.depth_km - OLD.depth_km| >= 1.0` OR `NEW.place IS DISTINCT FROM OLD.place`. Thresholds inlined in the function body. `DROP TRIGGER IF EXISTS … ; CREATE TRIGGER …` so re-application is safe.
+  - `migrate:down` drops trigger → function → tables in dependency-safe reverse order, finishing with `DROP SCHEMA quake CASCADE`.
 
-  Inside `migrate:down`: drop tables, function, schema in reverse order, with `IF EXISTS`. `DROP SCHEMA quake CASCADE` is the catch-all.
+**Verifications (all live, against a throwaway `timescale/timescaledb:latest-pg18` on `:5433`; dbmate run via the `amacneil/dbmate:latest` Docker image — no host-system installs)**
+- `make check` clean (all six linters; pyright 0/0/0).
+- `dbmate up`: applied the baseline in **31 ms**, no errors.
+- `\dt quake.*`: all 6 tables present.
+- `SELECT FROM timescaledb_information.hypertables`: confirms `quake.events` is a hypertable.
+- `\df quake.*`: confirms `quake.events_record_revision` exists and returns `trigger`.
+- Pre-seeded row: `SELECT * FROM quake.endpoint_locks` returns `INGESTION_LOCK` with `is_locked = false`.
+- **Revision trigger exercised end-to-end** with 5 sequential UPDATEs on a seed event:
+  - mag shift +0.05 → no revision ✓
+  - mag shift +0.20 → revision row written ✓
+  - depth shift +0.5 km → no revision ✓
+  - depth shift +2.0 km → revision row written ✓
+  - place change → revision row written ✓
+  - Final count: exactly **3 revisions** matching the 3 threshold-crossing updates.
+- `dbmate down`: rolled back in **47 ms**; `quake` schema gone from `information_schema.schemata`.
+- `dbmate up` (re-apply): clean; all 6 tables back. Idempotency proven on the same DB instance.
+- Throwaway container removed; no host-side leftovers.
 
-**Acceptance**
-- `make db-migrate` against a clean DB applies the migration with no error.
-- `\dt quake.*` in psql lists all six tables.
-- `SELECT * FROM timescaledb_information.hypertables WHERE hypertable_schema = 'quake'` shows `events` as a hypertable.
-- `\df quake.*` shows the `events_record_revision` function.
-- A direct test: `INSERT` then `UPDATE` a row with `magnitude` shift ≥ 0.1 → exactly one row in `event_revisions`. Same `UPDATE` with shift < 0.1 → no new row.
-- `make check` clean (the migration is SQL, but every other linter still runs).
+**Deviations from original plan**
+None of structural significance. Minor implementation choices the plan left open:
+
+1. **Migration timestamp:** `20260516170000_baseline.sql` (today's date, 17:00 UTC). Arbitrary; chosen for readability.
+2. **`OLD` values on revision rows reflect the row state at trigger-fire time.** Consecutive sub-threshold UPDATEs "build up" into the next `OLD` snapshot — e.g., the depth revision row shows `old_depth_km = 10.5` (the post-non-threshold value), not the seed's `10.0`. Standard `AFTER UPDATE FOR EACH ROW` semantics. Flagged in case you wanted "old" to mean "value before the most recent above-threshold change" (would require state tracking; more complex).
+3. **Place changes are unconditional** (any non-equal text triggers a revision). Matches the plan's "any non-equal place"; revisit if USGS's trivial place reformulations turn out to be noisy.
 
 **Proposed commit message**
 ```
