@@ -40,13 +40,13 @@ The database layer is implemented end-to-end without any business logic on top o
 | 2 | Sandbox-test wiring (`make migrate-test` + CI job) | ✅ Done | `03c5af5` |
 | 3 | Connection layer + `ExtractTransformLoad` base (`database/main.py`) | ✅ Done | `a3559f0` |
 | 4 | Pydantic row models (`database/models.py`) | ✅ Done | `606dc10` |
-| 5 | Events + Revisions ETLs (`database/etls/events.py`, `database/etls/revisions.py`) | ⬜ Not started | — |
+| 5 | Events + Revisions ETLs (`database/etls/events.py`, `database/etls/revisions.py`) | ✅ Done | `6265f91` |
 | 6 | Ingestion runs ETL (`database/etls/ingestion_runs.py`) | ⬜ Not started | — |
 | 7 | API keys + Alert filters ETLs (`database/etls/api_keys.py`, `database/etls/alert_filters.py`) | ⬜ Not started | — |
 | 8 | Pretty-schema helper (`database/_pretty_schema.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 5.
+**Next:** Task 6.
 
 ---
 
@@ -277,38 +277,106 @@ feat(db): add Pydantic row models for every quake.* table
 
 ---
 
-## Task 5 — Events + Revisions ETLs
+## Task 5 — Events + Revisions ETLs ✅
 
-**Why now.** Largest single behavior surface; revisions depend on events; tightly coupled and best landed together.
+**Status:** Done · Commit `6265f91`
 
-**Files created**
-- `database/etls/events.py` — `EventsETL(ExtractTransformLoad)`:
-  - `upsert(event: EventRow) -> Literal["inserted", "updated", "unchanged"]` — `INSERT ... ON CONFLICT (event_id, time) DO UPDATE SET ...` returning the row state. The revision trigger handles history; the ETL just performs the write.
-  - `upsert_many(events: Iterable[EventRow]) -> dict[str, int]` — batched UPSERT returning counts of `{inserted, updated}`.
-  - `get_by_id(event_id: str) -> EventRow | None` — single-row lookup keyed on the most recent `time` for that `event_id`.
-  - `recent(limit: int) -> list[EventRow]` — `ORDER BY time DESC LIMIT %s`.
-  - `by_magnitude(min_magnitude: float, since: datetime | None = None) -> list[EventRow]`.
-  - `near(lat: float, lon: float, radius_km: float) -> list[EventRow]` — naive bounding-box pre-filter + haversine fallback in SQL.
-- `database/etls/revisions.py` — `RevisionsETL(ExtractTransformLoad)`:
-  - `for_event(event_id: str) -> list[EventRevisionRow]` — `ORDER BY observed_at DESC`.
-  - `recent(limit: int) -> list[EventRevisionRow]`.
-  - No write methods — revisions are inserted by the DB trigger.
-- `tests/unit/test_events_etl.py` — async tests using the existing sandbox container or a fixture:
-  - upsert of a new event returns `"inserted"`.
-  - upsert of the same `(event_id, time)` with same magnitude returns `"unchanged"` (or `"updated"` — pick once and stick; design decision in implementation).
-  - upsert with magnitude shift ≥ 0.1 writes exactly one row to `event_revisions` (cross-check via `RevisionsETL.for_event`).
-  - `recent(5)` returns events in `time DESC` order.
-- `tests/conftest.py` (extended) — fixture that yields a connection scoped to a transaction that always rolls back, so tests don't pollute each other.
+**Pre-work decision (open question #4 settled).** Test DB strategy: **session-scoped sandbox container** (not live-compose-DB + per-test rollback). The per-test rollback pattern doesn't compose with the pool-based `transaction()` from Task 3 — `_execute` checks out its own connection and commits on exit, leaving nothing for the test fixture to roll back. Session-container + per-test TRUNCATE is the cleaner shape, also CI-ready without any service-container config.
 
-**Acceptance**
-- All new tests pass via `pytest tests/unit/test_events_etl.py -v` against the running compose DB (assume the operator runs `make up` first; document that in the test module's top docstring).
-- `make check` clean.
-- `make test` runs the new tests (the no-tests-collected wrapper is no longer triggered — there are actual tests now).
+**Shipped** — 4 new files + 1 makefile edit
+
+### `tests/conftest.py` (new, 201 lines)
+Session-scoped autouse fixture:
+- Skips cleanly if `docker` is not on `PATH`.
+- Spawns `timescale/timescaledb:latest-pg18` on host port **5435** (chosen distinct from `make migrate-test`'s 5433 so the two can run concurrently without port clash).
+- Polls `pg_isready -h 127.0.0.1` for TCP readiness (avoids the TimescaleDB initdb local-socket false-positive — same bug pattern fixed in Task 2).
+- Runs `dbmate up` via the same Docker image the Makefile uses.
+- Populates every env var the strict loader requires (placeholders for non-DB vars so bare `pytest` works without sourcing `.env`); **always overrides** `DB_HOST`/`DB_PORT` so an externally-set `.env` cannot accidentally route tests at the compose DB or production.
+- Clears the `get_environmental_variables` lru_cache and closes the connection pool at session end (before container teardown — otherwise `atexit` warns when closing against a dead host).
+
+Per-test autouse fixture: `TRUNCATE quake.events, quake.event_revisions, quake.api_keys, quake.alert_filters, quake.ingestion_runs, quake.endpoint_locks RESTART IDENTITY CASCADE` + re-seed `INGESTION_LOCK`.
+
+### `database/etls/events.py` (new, 167 lines)
+`EventsETL(ExtractTransformLoad)` with:
+- `upsert(event: EventRow) -> Literal["inserted", "updated"]` — `INSERT ... ON CONFLICT (event_id, time) DO UPDATE SET ... RETURNING (xmax = 0) AS was_insert`. `xmax = 0` distinguishes a fresh insert from a conflict-driven UPDATE.
+- `upsert_many(events: Iterable[EventRow]) -> dict[str, int]` — single transaction, per-row cursor execute, returns `{"inserted": N, "updated": M}`.
+- `get_by_id(event_id: str) -> EventRow | None` — most-recent `time` for the id.
+- `recent(limit: int) -> list[EventRow]` — `ORDER BY time DESC LIMIT %s`.
+- `by_magnitude(min_magnitude: float, since: datetime | None = None) -> list[EventRow]` — uses `(%s::timestamptz IS NULL OR time >= %s::timestamptz)` so a single SQL string handles both branches.
+- `near(lat: float, lon: float, radius_km: float) -> list[EventRow]` — Python-computed bounding box (`Δlat = r/111`, `Δlon = r/(111·cos(lat))`, cosine clamped at `1e-4` to dodge polar divide-by-zero), then inline haversine in SQL.
+
+### `database/etls/revisions.py` (new, 41 lines)
+`RevisionsETL(ExtractTransformLoad)` — read-only:
+- `for_event(event_id: str) -> list[EventRevisionRow]` — `ORDER BY observed_at DESC, id DESC`.
+- `recent(limit: int) -> list[EventRevisionRow]` — same ordering, capped.
+- **No write methods by design.** Any write path here would silently bypass the trigger's threshold logic and corrupt the audit log; the docstring spells this out.
+
+### `tests/unit/test_events_etl.py` (new, 194 lines)
+12 tests, all green on first run:
+
+| # | Test | Plan scenario |
+|---|------|---------------|
+| 1 | `test_upsert_new_event_returns_inserted` | "upsert new → inserted" ✓ |
+| 2 | `test_upsert_same_pk_same_data_returns_updated` | "same (id,time) → 'updated' (we picked it)" ✓ |
+| 3 | `test_upsert_above_threshold_writes_one_revision` | "mag shift ≥ 0.1 → exactly one revision row via `RevisionsETL.for_event`" ✓ |
+| 4 | `test_upsert_below_threshold_writes_no_revision` | (added) sub-threshold negative case |
+| 5 | `test_upsert_many_counts_inserts_and_updates` | (added) batched counts |
+| 6 | `test_recent_orders_by_time_desc` | "recent(5) ordered time DESC" ✓ |
+| 7 | `test_recent_respects_limit` | (added) limit sanity |
+| 8 | `test_get_by_id_returns_freshest_row` | (added) latest-time row picked |
+| 9 | `test_get_by_id_missing_returns_none` | (added) miss → None |
+| 10 | `test_by_magnitude_filters_and_orders` | (added) min_magnitude + DESC |
+| 11 | `test_by_magnitude_since_bound` | (added) `since` filter |
+| 12 | `test_near_includes_close_excludes_far` | (added) Berkeley reference, 50 km radius, Oakland/SF in, Sacramento out |
+
+### `makefile`
+- Dropped the no-tests-collected early-exit wrapper. `test:` is now just `$(PYTEST)`.
+
+**Verifications**
+- `make check` — clean (all 6 linters; pyright 0/0/0).
+- `make test` — **12 passed in 3.27s** on the first run (container startup ~4s, TRUNCATE per test in milliseconds). No flakes.
+- Sandbox container torn down cleanly (`docker ps -a --filter name=quake_test_db` empty post-run).
+
+**Deviations from original plan**
+1. **Test isolation via TRUNCATE-all, not per-test transaction rollback.** Forced by the Task 3 pool design (see pre-work decision).
+2. **Sync tests, not async.** `ExtractTransformLoad` from Task 3 is sync (psycopg sync API). Plan said "async tests"; that was wrong given the connection layer we built.
+3. **`upsert` returns `Literal["inserted", "updated"]`, never `"unchanged"`.** Plan said "pick one and stick"; picked "updated". An UPSERT on an existing key always runs the UPDATE; the revision trigger handles "actually changed?" semantics at the `event_revisions` level. Documented in the `upsert` docstring.
+4. **No separate `tests/unit/test_revisions_etl.py`.** The trigger + `RevisionsETL.for_event` are exercised by the events tests (tests #3 and #4). Easy to split out if you want.
+5. **CI workflow not touched.** GitHub-hosted runners have Docker, so the existing `test` job runs the sandbox container without a service-container block. If image-pull timeouts surface, we can pre-pull as a follow-up.
+6. **Sandbox uses port 5435** (not 5433 like `make migrate-test`). Lets the two run concurrently.
+
+**Open follow-ups**
+- ~~(Carry-over from Epic 1) `coverage-badge` broken on Python 3.14 fresh venvs.~~ → **resolved in `c9c20ff`** (see Mid-epic DX cleanup below).
+- (Carry-over from Task 2) Pin `amacneil/dbmate` image to a specific version.
+- (Carry-over from Epic 1) `pydantic-settings` still pinned but unused.
+- (Carry-over from Epic 1) Decide whether to purge `build-essential` from the Dockerfile.
+- **(New, Task 5)** Verify the test job runs cleanly on GitHub CI; if image-pull timeouts surface, add a `docker pull` warm-up step.
+- **(New, Task 5)** If we ever introduce concurrent test execution (`pytest-xdist`), the single shared sandbox + TRUNCATE-all pattern would clash; per-worker containers or per-worker schemas needed.
 
 **Proposed commit message**
 ```
 feat(db): add Events and Revisions ETLs with parameterized SQL and unit tests
 ```
+
+---
+
+## Mid-epic DX cleanup ✅
+
+**Status:** Done · Commit `c9c20ff`
+
+Not a planned task — three unrelated developer-experience issues surfaced while running Task 5 verification and got bundled into one fix commit:
+
+1. **`coverage-badge` broken on Python 3.14 fresh venvs.** `coverage-badge==1.1.2` (latest) imports `pkg_resources` at module load, which `setuptools` removed in `81.0.0` (replacement is stdlib `importlib.metadata`). New venvs from `requirements-test.txt` would fail `make coverage-badge` with `ModuleNotFoundError: No module named 'pkg_resources'`. **Fix:** pinned `setuptools<80` in `requirements-test.txt` with an inline comment naming the cutoff and the upstream blocker.
+2. **`make test-report` didn't open the report in the browser.** It generated `htmlcov/index.html` and stopped. **Fix:** appended an `xdg-open htmlcov/index.html &` step (backgrounded so make doesn't block on the browser process), guarded by `command -v xdg-open` (clean fallback message on headless boxes). Preserves pytest's exit code so test failures still surface in the shell *and* the partial coverage report still opens.
+3. **`coverage.svg` not gitignored.** Regenerable artifact, no `README` reference, no consumer. **Fix:** added `coverage.svg` to the "Test / coverage artifacts" block of `.gitignore` (alongside `.coverage`, `coverage.xml`, `htmlcov/`).
+
+**Proposed commit message (as landed)**
+```
+feat: enhance test-report target to open coverage report in browser
+and update requirements for setuptools compatibility
+```
+
+(In retrospect three smaller commits would have matched the workflow better; landed as one since they're all small and DX-only.)
 
 ---
 
