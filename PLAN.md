@@ -37,12 +37,12 @@ A separate `health_check` task pings the DB for liveness checks.
 |---|------|--------|--------|
 | 1 | USGS HTTP client (`quake/ingestion/usgs/client.py`) | ✅ Done | `bb1c583` |
 | 2 | GeoJSON parser + `EventRow` mapping (`quake/ingestion/usgs/parser.py`) | ✅ Done | `c2a2326` |
-| 3 | Ingestion orchestrator (`quake/events/ingest.py`) | ⬜ Not started | — |
+| 3 | Ingestion orchestrator (`quake/events/ingest.py`) | ✅ Done | `10296ae` |
 | 4 | Celery `poll_usgs` + Beat schedule + `health_check` (`quake/tasks.py`, `config.py`) | ⬜ Not started | — |
 | 5 | Integration test (`tests/integration/test_poll_usgs.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 3.
+**Next:** Task 4.
 
 ---
 
@@ -155,34 +155,49 @@ feat(ingestion): parse USGS GeoJSON into EventRow batches
 
 ---
 
-## Task 3 — Ingestion orchestrator
+## Task 3 — Ingestion orchestrator ✅
 
-**Why now.** First DB-touching code in the epic. Validates the client + parser + ETL chain end-to-end before Celery comes into play.
+**Status:** Done · Commit `10296ae`
 
-**Files created**
-- `quake/events/__init__.py` — empty package marker.
-- `quake/events/ingest.py`:
-  - `class IngestionResult(BaseModel)` — typed return: `inserted: int`, `updated: int`, `revisions: int`, `error: str | None = None`.
-  - `def poll_once(client: UsgsClient | None = None, feed: UsgsFeed = UsgsFeed.ALL_HOUR) -> IngestionResult`:
-    1. Open the run: `run_id = IngestionRunsETL().start_run()`. Capture `run_started = datetime.now(timezone.utc)` for the revision count window.
-    2. `try:`
-       - `client = client or UsgsClient()` (caller-supplied for tests).
-       - `raw = client.fetch(feed)`.
-       - `events = parse_feed(raw)`.
-       - `counts = EventsETL().upsert_many(events)` → `{inserted, updated}`.
-       - `revisions = SELECT count(*) FROM quake.event_revisions WHERE observed_at >= %s` (param: `run_started`).
-       - `IngestionRunsETL().finish_run(run_id, inserted=counts["inserted"], updated=counts["updated"], revisions=revisions)`.
-       - Return `IngestionResult(inserted=..., updated=..., revisions=...)`.
-    3. `except Exception as exc:` capture `str(exc)`, `finish_run(run_id, inserted=0, updated=0, revisions=0, error=str(exc))`, then re-raise.
-- `tests/unit/test_ingest.py`:
-  - **Happy path** — monkeypatch `UsgsClient.fetch` to return the Task 2 fixture; run `poll_once()`; assert events landed in `quake.events`, ingestion_runs row complete, `IngestionResult.inserted == fixture.feature_count`, `revisions == 0` (fresh DB).
-  - **Idempotent re-run** — call `poll_once()` twice; second call yields `updated == feature_count` and `inserted == 0`.
-  - **Revision** — first call inserts; mutate the fixture's first feature's `mag` by +0.3, second call → `revisions == 1`.
-  - **Error path** — monkeypatch `UsgsClient.fetch` to raise; assert ingestion_runs row records the error and `poll_once` re-raises.
+**Shipped** — 1 new module + 1 ETL extension + 1 test module
 
-**Acceptance**
-- `make check` clean.
-- New tests pass against the session-scoped sandbox DB.
+### `quake/events/ingest.py` (89 lines)
+- **`IngestionResult(BaseModel)`** — typed return: `inserted: int`, `updated: int`, `revisions: int`, `error: str | None = None`.
+- **`poll_once(client=None, feed=UsgsFeed.ALL_HOUR) -> IngestionResult`** — single entry point for a poll cycle:
+  1. Capture `run_started = datetime.now(timezone.utc)` **before** `start_run()` so the post-upsert `count_since` window catches every revision the trigger writes during this cycle.
+  2. `run_id = IngestionRunsETL().start_run()`.
+  3. Take ownership of the `UsgsClient` if none passed (`own_client = client is None; client = client or UsgsClient()`); guarantee `close()` in a `finally` block.
+  4. Inner `try`: `fetch → parse_feed → EventsETL.upsert_many → RevisionsETL.count_since(run_started) → finish_run(...)`. Returns `IngestionResult(...)` on success.
+  5. Inner `except Exception as exc`: capture `str(exc)`, log via `logger.exception(...)`, call `finish_run(run_id, ..., error=str(exc))`, then `raise` (re-raise unchanged so callers see the original exception type).
+- Logger: `setup_logger("ingest", "quake-feed")`. INFO-level on success (with run_id + counts in `extra`), full traceback on failure.
+
+### `database/etls/revisions.py` (+13 lines)
+- **`count_since(since: datetime) -> int`** — `SELECT count(*) FROM quake.event_revisions WHERE observed_at >= %s`. Added because the orchestrator's revision tally needs a windowed count, and every other table's queries live in its ETL class — keeping this query in `RevisionsETL` preserves that layering.
+
+### `tests/unit/test_ingest.py` (118 lines, 4 tests)
+All green on first run:
+
+| # | Test | Coverage |
+|---|------|----------|
+| 1 | `test_happy_path_inserts_and_records_run` | every fixture feature inserted; ingestion_runs row complete with matching counts; events queryable via `EventsETL.recent()` |
+| 2 | `test_second_call_with_same_data_updates_zero_inserts` | identical re-poll: `inserted=0`, `updated=feature_count`, `revisions=0` (trigger doesn't fire on no-op UPDATEs) |
+| 3 | `test_above_threshold_magnitude_change_produces_one_revision` | bump first feature's `mag` by +0.3 (above 0.1 threshold), second poll: `revisions=1`, cross-checked via `RevisionsETL.for_event()` |
+| 4 | `test_error_path_records_error_and_reraises` | monkeypatched `fetch` raises `RuntimeError("boom from USGS")`; re-raised by `poll_once`; latest ingestion_runs row has `error="boom from USGS"`, `finished_at IS NOT NULL`, all counts 0 |
+
+`patch_fetch` fixture: a helper that monkeypatches `UsgsClient.fetch` to return a given payload — keeps the test code declarative.
+
+**Verifications**
+- `make check` — clean (all 6 linters, 0 errors).
+- `make test` — **50 passed in 5.43s** (46 existing + 4 new); no flakes; sandbox container cleaned up.
+
+**Deviations from original plan**
+1. **Added `RevisionsETL.count_since` instead of inlining the SQL in the orchestrator.** Plan sketched a raw `SELECT count(*)` inside `poll_once`. Every other table's queries live in its ETL class — keeping revisions' query in `RevisionsETL` preserves that layering. Net: one new method, +13 lines on `revisions.py`. No callers outside the orchestrator yet, so the surface area stays small.
+2. **Explicit client ownership** (`own_client = client is None; client = client or UsgsClient(); try: ... finally: if own_client: client.close()`). Plan's `client = client or UsgsClient()` inside the try block would leak an httpx connection if `poll_once` created the client. The explicit-ownership pattern closes it in `finally` while still allowing tests to inject their own client without losing it.
+3. **Tests use `monkeypatch.setattr(UsgsClient, "fetch", ...)`** instead of passing a `FakeClient` instance. Cleaner than building a stand-in to satisfy pyright's `UsgsClient | None` signature; also keeps the orchestrator-owned-client path exercised in every test (calls are `poll_once()` with no args).
+4. **Error string surfaced verbatim** in `runs.error` (`str(exc)`). Plan didn't specify formatting; this mirrors what ops dashboards want. Exception type is lost in the row but available in the WARN-level log line (`logger.exception(...)` writes the full traceback).
+
+**Open follow-ups**
+Unchanged from prior tasks.
 
 **Proposed commit message**
 ```
