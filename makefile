@@ -71,8 +71,17 @@ find-unused: ## Run vulture to surface possible dead code
 test: ## Run the test suite
 	$(PYTEST)
 
-test-report: ## Run tests and emit an HTML coverage report into htmlcov/
-	$(PYTEST) --cov=. --cov-report=html
+test-report: ## Run tests, emit an HTML coverage report into htmlcov/, and open it in the default browser
+	@$(PYTEST) --cov=. --cov-report=html; RC=$$?; \
+		if [ -f htmlcov/index.html ]; then \
+			if command -v xdg-open >/dev/null 2>&1; then \
+				echo "Opening htmlcov/index.html in default browser..."; \
+				xdg-open htmlcov/index.html >/dev/null 2>&1 & \
+			else \
+				echo "(xdg-open not found; open htmlcov/index.html manually)"; \
+			fi; \
+		fi; \
+		exit $$RC
 
 coverage-badge: ## Generate coverage.svg from the latest coverage data
 	$(COVERAGE_BADGE) -f -o coverage.svg
