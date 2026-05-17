@@ -68,10 +68,8 @@ find-unused: ## Run vulture to surface possible dead code
 # ===========================================================================
 
 .PHONY: test test-report coverage-badge
-test: ## Run the test suite (treats pytest exit 5 'no tests collected' as success)
-	@$(PYTEST); RC=$$?; \
-		if [ $$RC -eq 5 ]; then echo "[make test] no tests collected (expected until Epic 2)"; exit 0; \
-		else exit $$RC; fi
+test: ## Run the test suite
+	$(PYTEST)
 
 test-report: ## Run tests and emit an HTML coverage report into htmlcov/
 	$(PYTEST) --cov=. --cov-report=html
