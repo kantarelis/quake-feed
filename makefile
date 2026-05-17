@@ -22,9 +22,12 @@ COMPOSE := docker compose
 # dbmate runs via the official Docker image so the host doesn't need a local
 # install. --network host lets the container reach localhost ports (compose
 # DB on 5432, sandbox DB on 5433). The database/ directory is mounted at /db
-# read-write so `dbmate dump` can update schema.sql.
+# read-write so `dbmate dump` (and `dbmate up`'s implicit schema dump) can
+# update schema.sql. --user forces the container to write as the host user
+# so generated files don't end up root-owned and immovable.
 DBMATE_IMAGE := amacneil/dbmate:latest
 DBMATE := $(DOCKER) run --rm \
+	--user $(shell id -u):$(shell id -g) \
 	--network host \
 	-v $(PWD)/database:/db:rw \
 	-w /db \
@@ -219,10 +222,11 @@ migrate-test: ## Sandbox-test migrations on a throwaway TimescaleDB on :5433
 	$(DBMATE) $(DBMATE_FLAGS) up; \
 	echo "==> Sandbox migration test PASSED."
 
-db-schema: ## Dump local schema to database/schema.sql (gitignored)
+db-schema: ## Dump local schema to database/schema.sql (gitignored) and prettify in place
 	@set -a; . ./.env; set +a; \
 	DATABASE_URL="postgres://$$DB_USERNAME:$$DB_PASSWORD@127.0.0.1:$$DB_PORT/$$DB_NAME?sslmode=disable" \
 	$(DBMATE) $(DBMATE_FLAGS) dump
+	$(PY) -m database._pretty_schema
 
 # ===========================================================================
 # API keys (Epic 5 placeholders)

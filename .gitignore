@@ -15,6 +15,10 @@ postgres.session.sql
 # Generated artifacts (regenerable on demand)
 # ---------------------------------------------------------------------------
 database/schema.sql
+# dbmate's default schema-dump path when --schema-file isn't passed
+# (e.g. someone runs `dbmate up` manually outside the Makefile). The
+# Makefile always passes --schema-file, but this catches drift.
+database/db/
 
 # ---------------------------------------------------------------------------
 # Python
