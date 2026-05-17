@@ -41,12 +41,12 @@ The database layer is implemented end-to-end without any business logic on top o
 | 3 | Connection layer + `ExtractTransformLoad` base (`database/main.py`) | ✅ Done | `a3559f0` |
 | 4 | Pydantic row models (`database/models.py`) | ✅ Done | `606dc10` |
 | 5 | Events + Revisions ETLs (`database/etls/events.py`, `database/etls/revisions.py`) | ✅ Done | `6265f91` |
-| 6 | Ingestion runs ETL (`database/etls/ingestion_runs.py`) | ⬜ Not started | — |
+| 6 | Ingestion runs ETL (`database/etls/ingestion_runs.py`) | ✅ Done | `eb08c78` |
 | 7 | API keys + Alert filters ETLs (`database/etls/api_keys.py`, `database/etls/alert_filters.py`) | ⬜ Not started | — |
 | 8 | Pretty-schema helper (`database/_pretty_schema.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 6.
+**Next:** Task 7.
 
 ---
 
@@ -380,19 +380,42 @@ and update requirements for setuptools compatibility
 
 ---
 
-## Task 6 — Ingestion runs ETL
+## Task 6 — Ingestion runs ETL ✅
 
-**Why now.** Small, observability-only, no coupling to other ETLs — a clean isolated commit.
+**Status:** Done · Commit `eb08c78`
 
-**Files created**
-- `database/etls/ingestion_runs.py` — `IngestionRunsETL(ExtractTransformLoad)`:
-  - `start_run() -> int` — `INSERT (started_at) VALUES (now()) RETURNING id`.
-  - `finish_run(run_id: int, *, inserted: int, updated: int, revisions: int, error: str | None = None) -> None`.
-  - `latest(limit: int) -> list[IngestionRunRow]`.
-- `tests/unit/test_ingestion_runs_etl.py` — start → finish → assert row state and counts.
+**Shipped** — 2 new files
 
-**Acceptance**
-- New tests green. `make check` clean.
+### `database/etls/ingestion_runs.py` (67 lines)
+`IngestionRunsETL(ExtractTransformLoad)`:
+- **`start_run() -> int`** — `INSERT INTO quake.ingestion_runs (started_at) VALUES (now()) RETURNING id`. Relies on the column defaults: `started_at = now()` and every count column defaults to `0`; `finished_at` stays NULL until `finish_run` is called.
+- **`finish_run(run_id, *, inserted, updated, revisions, error=None) -> None`** — single UPDATE setting `finished_at = now()`, all three count columns, and the optional `error` string.
+- **`latest(limit) -> list[IngestionRunRow]`** — `ORDER BY started_at DESC, id DESC LIMIT %s` (id tiebreaker for runs sharing a `started_at` at microsecond resolution).
+
+### `tests/unit/test_ingestion_runs_etl.py` (67 lines)
+5 tests, all green on first run:
+
+| # | Test | Coverage |
+|---|------|----------|
+| 1 | `test_start_run_returns_int_id` | start_run returns a positive int |
+| 2 | `test_start_then_finish_records_counts` | round-trip: NULL `finished_at` + zero counts on start → populated `finished_at` + matching counts after finish (plan's explicit "start → finish → assert" scenario) |
+| 3 | `test_finish_run_records_error_string` | error path: `error="USGS 503"` persists; `finished_at` still set |
+| 4 | `test_latest_orders_by_started_at_desc` | newest run listed first |
+| 5 | `test_latest_respects_limit` | `latest(2)` of 5 rows returns 2 |
+
+**Verifications**
+- `make check` — clean (all 6 linters, 0 errors).
+- `make test` — **17 passed in 4.73s** (12 events + 5 ingestion_runs); no flakes; sandbox container cleaned up.
+
+**Deviations from original plan**
+None of structural significance. Minor notes:
+1. **Kwarg `revisions=` vs column `revision_count`** — kept the plan's kwarg name; column stays `revision_count` for symmetry with `inserted_count`/`updated_count`. They only meet in the SQL string.
+2. **Explicit `int(row["id"])` cast on `start_run`** so pyright doesn't widen the return to `Any` from `_execute`'s signature.
+3. **`latest` order is `started_at DESC, id DESC`** — same pattern as `RevisionsETL.recent` from Task 5. Defensive against concurrent runs sharing a `started_at` timestamp.
+4. **Two extra sanity tests (`latest` order, `latest` limit)** beyond the plan's single "start → finish" scenario. Keeps coverage roughly equivalent to Task 5's depth.
+
+**Open follow-ups**
+Unchanged from Task 5 — no new ones from this task.
 
 **Proposed commit message**
 ```
