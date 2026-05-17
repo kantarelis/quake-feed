@@ -4,6 +4,9 @@
 >
 > A real-time public earthquake data service: USGS realtime feed → ingestion → TimescaleDB → read API + SSE alerts + a live map dashboard. Containerized, observable, and runnable on a laptop with one `make up`.
 
+[![CI](https://github.com/kantarelis/quake-feed/actions/workflows/code_quality_assurance.yml/badge.svg)](https://github.com/kantarelis/quake-feed/actions/workflows/code_quality_assurance.yml)
+![Coverage](coverage.svg)
+
 ---
 
 ## 🧭 Table of Contents

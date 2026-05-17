@@ -2,6 +2,7 @@
 # Working / planning documents (local-only, never pushed)
 # ---------------------------------------------------------------------------
 vault_init_output.txt
+postgres.session.sql
 
 # ---------------------------------------------------------------------------
 # Environment / secrets
@@ -14,6 +15,10 @@ vault_init_output.txt
 # Generated artifacts (regenerable on demand)
 # ---------------------------------------------------------------------------
 database/schema.sql
+# dbmate's default schema-dump path when --schema-file isn't passed
+# (e.g. someone runs `dbmate up` manually outside the Makefile). The
+# Makefile always passes --schema-file, but this catches drift.
+database/db/
 
 # ---------------------------------------------------------------------------
 # Python

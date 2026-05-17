@@ -18,8 +18,24 @@ PYRIGHT := npx --yes pyright --pythonpath $(VENV)/bin/python
 
 DOCKER := docker
 COMPOSE := docker compose
-DBMATE := dbmate
-DBMATE_FLAGS := --migrations-table public.schema_migrations
+
+# dbmate runs via the official Docker image so the host doesn't need a local
+# install. --network host lets the container reach localhost ports (compose
+# DB on 5432, sandbox DB on 5433). The database/ directory is mounted at /db
+# read-write so `dbmate dump` (and `dbmate up`'s implicit schema dump) can
+# update schema.sql. --user forces the container to write as the host user
+# so generated files don't end up root-owned and immovable.
+DBMATE_IMAGE := amacneil/dbmate:latest
+DBMATE := $(DOCKER) run --rm \
+	--user $(shell id -u):$(shell id -g) \
+	--network host \
+	-v $(PWD)/database:/db:rw \
+	-w /db \
+	-e DATABASE_URL \
+	$(DBMATE_IMAGE)
+DBMATE_FLAGS := --migrations-dir /db/migrations \
+	--schema-file /db/schema.sql \
+	--migrations-table public.schema_migrations
 
 SRC := .
 
@@ -55,13 +71,20 @@ find-unused: ## Run vulture to surface possible dead code
 # ===========================================================================
 
 .PHONY: test test-report coverage-badge
-test: ## Run the test suite (treats pytest exit 5 'no tests collected' as success)
-	@$(PYTEST); RC=$$?; \
-		if [ $$RC -eq 5 ]; then echo "[make test] no tests collected (expected until Epic 2)"; exit 0; \
-		else exit $$RC; fi
+test: ## Run the test suite
+	$(PYTEST)
 
-test-report: ## Run tests and emit an HTML coverage report into htmlcov/
-	$(PYTEST) --cov=. --cov-report=html
+test-report: ## Run tests, emit an HTML coverage report into htmlcov/, and open it in the default browser
+	@$(PYTEST) --cov=. --cov-report=html; RC=$$?; \
+		if [ -f htmlcov/index.html ]; then \
+			if command -v xdg-open >/dev/null 2>&1; then \
+				echo "Opening htmlcov/index.html in default browser..."; \
+				xdg-open htmlcov/index.html >/dev/null 2>&1 & \
+			else \
+				echo "(xdg-open not found; open htmlcov/index.html manually)"; \
+			fi; \
+		fi; \
+		exit $$RC
 
 coverage-badge: ## Generate coverage.svg from the latest coverage data
 	$(COVERAGE_BADGE) -f -o coverage.svg
@@ -158,24 +181,52 @@ vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 
 # ===========================================================================
 # Database migrations (dbmate)
-# `db-migrate` and `db-schema` invoke dbmate directly (no-op when no
-# migrations exist). `migrate-test` orchestrates a sandbox container and is
-# stubbed until Epic 2.
+# `db-migrate` and `db-schema` target the running compose DB.
+# `migrate-test` spins up a throwaway TimescaleDB on :5433 and exercises the
+# full migration cycle (up -> down -> up) to validate that every migration
+# is reversible and re-appliable. Cleanup runs via trap even on failure.
 # ===========================================================================
 
 .PHONY: db-migrate migrate-test db-schema
 db-migrate: ## Apply pending migrations to the local DB
 	@set -a; . ./.env; set +a; \
-	DATABASE_URL="postgres://$$DB_USERNAME:$$DB_PASSWORD@localhost:$$DB_PORT/$$DB_NAME?sslmode=disable" \
+	DATABASE_URL="postgres://$$DB_USERNAME:$$DB_PASSWORD@127.0.0.1:$$DB_PORT/$$DB_NAME?sslmode=disable" \
 	$(DBMATE) $(DBMATE_FLAGS) up
 
-migrate-test: ## (stub) Sandbox-test migrations on a throwaway DB on :5433
-	@echo "not yet implemented (Epic 2)"
+migrate-test: ## Sandbox-test migrations on a throwaway TimescaleDB on :5433
+	@set -e; \
+	trap "$(DOCKER) rm -f quake_migrate_test >/dev/null 2>&1 || true" EXIT; \
+	$(DOCKER) rm -f quake_migrate_test >/dev/null 2>&1 || true; \
+	echo "==> Starting throwaway TimescaleDB on :5433..."; \
+	$(DOCKER) run -d --name quake_migrate_test \
+		-e POSTGRES_USER=quake \
+		-e POSTGRES_PASSWORD=quake \
+		-e POSTGRES_DB=quake-db \
+		-p 5433:5432 \
+		timescale/timescaledb:latest-pg18 >/dev/null; \
+	echo "==> Waiting for DB to accept TCP connections..."; \
+	ready=0; \
+	for i in $$(seq 1 60); do \
+		if $(DOCKER) exec quake_migrate_test pg_isready -h 127.0.0.1 -U quake -d quake-db >/dev/null 2>&1; then \
+			ready=1; echo "    DB ready after $${i}s."; break; \
+		fi; \
+		sleep 1; \
+	done; \
+	if [ $$ready -eq 0 ]; then echo "    DB never accepted TCP within 60s."; exit 1; fi; \
+	export DATABASE_URL="postgres://quake:quake@127.0.0.1:5433/quake-db?sslmode=disable"; \
+	echo "==> dbmate up (cold start)..."; \
+	$(DBMATE) $(DBMATE_FLAGS) up; \
+	echo "==> dbmate down (roll back newest migration)..."; \
+	$(DBMATE) $(DBMATE_FLAGS) down; \
+	echo "==> dbmate up (re-apply newest migration)..."; \
+	$(DBMATE) $(DBMATE_FLAGS) up; \
+	echo "==> Sandbox migration test PASSED."
 
-db-schema: ## Dump local schema to database/schema.sql (gitignored)
+db-schema: ## Dump local schema to database/schema.sql (gitignored) and prettify in place
 	@set -a; . ./.env; set +a; \
-	DATABASE_URL="postgres://$$DB_USERNAME:$$DB_PASSWORD@localhost:$$DB_PORT/$$DB_NAME?sslmode=disable" \
+	DATABASE_URL="postgres://$$DB_USERNAME:$$DB_PASSWORD@127.0.0.1:$$DB_PORT/$$DB_NAME?sslmode=disable" \
 	$(DBMATE) $(DBMATE_FLAGS) dump
+	$(PY) -m database._pretty_schema
 
 # ===========================================================================
 # API keys (Epic 5 placeholders)
