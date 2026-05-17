@@ -35,41 +35,64 @@ A separate `health_check` task pings the DB for liveness checks.
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 1 | USGS HTTP client (`quake/ingestion/usgs/client.py`) | ⬜ Not started | — |
+| 1 | USGS HTTP client (`quake/ingestion/usgs/client.py`) | ✅ Done | `bb1c583` |
 | 2 | GeoJSON parser + `EventRow` mapping (`quake/ingestion/usgs/parser.py`) | ⬜ Not started | — |
 | 3 | Ingestion orchestrator (`quake/events/ingest.py`) | ⬜ Not started | — |
 | 4 | Celery `poll_usgs` + Beat schedule + `health_check` (`quake/tasks.py`, `config.py`) | ⬜ Not started | — |
 | 5 | Integration test (`tests/integration/test_poll_usgs.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 1.
+**Next:** Task 2.
 
 ---
 
-## Task 1 — USGS HTTP client
+## Task 1 — USGS HTTP client ✅
 
-**Why now.** Lowest-risk isolated piece. Validates the `httpx` + `tenacity` wiring (both already pinned in `requirements.txt`) before anything depends on it.
+**Status:** Done · Commit `bb1c583`
 
-**Files created**
-- `quake/ingestion/__init__.py` and `quake/ingestion/usgs/__init__.py` — empty package markers.
-- `quake/ingestion/usgs/client.py`:
-  - `class UsgsFeed(StrEnum)` — feed tiers we care about. Initial entry: `ALL_HOUR = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson"`. Adding `ALL_DAY` / `ALL_WEEK` is one line each when needed.
-  - `class UsgsClient`:
-    - `__init__(self, timeout: float = 10.0)` — builds a long-lived `httpx.Client`.
-    - `fetch(self, feed: UsgsFeed) -> dict` — HTTP GET, parse JSON, return dict.
-    - Retry wrapper: `@tenacity.retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=10), retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)), reraise=True)`.
-    - `close(self) -> None` and `__enter__`/`__exit__` so callers can use `with UsgsClient() as c:`.
-  - `class UsgsClientError(RuntimeError)` — raised for HTTP 4xx (non-retryable) or after final-attempt failure.
-- `tests/unit/test_usgs_client.py`:
-  - **Happy path** — mock `httpx.Client.get` to return a 200 with `{"type": "FeatureCollection", "features": []}`; assert the dict round-trips.
-  - **Retry-then-succeed** — mock raises `httpx.ConnectError` twice, then succeeds. Assert the result returns and call count == 3.
-  - **Final failure** — mock always raises; assert it raises after 3 attempts.
-  - **HTTP 4xx** — mock returns 400; assert `UsgsClientError` (not retried).
-  - Uses `respx` for httpx mocking (one new test-dep — alternative is `unittest.mock` on the client method).
+**Shipped** — 1 new module + 1 test module + 1 dep bump
 
-**Acceptance**
-- `make check` clean (note: `httpx`, `tenacity` already typed; `respx` if added needs `ignore_missing_imports` check).
-- New tests pass; total test count is 35 (existing) + 4 = 39.
+### `quake/ingestion/usgs/client.py` (100 lines)
+- **`UsgsFeed(StrEnum)`** — `ALL_HOUR = "https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/all_hour.geojson"`. Adding day/week tiers is a one-line addition when needed.
+- **`UsgsClient`** — sync context manager wrapping a long-lived `httpx.Client(timeout=10.0)`. Supports `with UsgsClient() as c:` via `__enter__`/`__exit__`; explicit `close()` too.
+- **`UsgsClient._get(url)`** — `@tenacity.retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10), retry=retry_if_exception_type((httpx.TransportError, httpx.TimeoutException)), reraise=True)`.
+- **`UsgsClient.fetch(feed) -> dict[str, Any]`** — calls `_get`, post-validates the response:
+  - Transport failure surviving all retries → wrapped as `UsgsClientError("unreachable…")` with `__cause__` chained to the httpx exception.
+  - `response.status_code >= 400` → `UsgsClientError("…HTTP <code>…")` raised immediately (no retry).
+  - Non-JSON body → `UsgsClientError("response was not valid JSON…")`.
+  - Non-dict JSON (array, string, etc.) → `UsgsClientError("response was not a JSON object…")`.
+- **`UsgsClientError(RuntimeError)`** — single typed exception for every USGS failure mode callers care about.
+
+### `tests/unit/test_usgs_client.py` (78 lines)
+4 tests, all green on first run, all respx-mocked (offline + deterministic):
+
+| # | Test | Coverage |
+|---|------|----------|
+| 1 | `test_fetch_happy_path_returns_parsed_json` | 200 + JSON body round-trip; `route.call_count == 1` |
+| 2 | `test_fetch_retries_transport_error_then_succeeds` | 2× `ConnectError` then 200; `call_count == 3`, body returned |
+| 3 | `test_fetch_exhausts_retries_then_raises_usgs_client_error` | persistent `ConnectError` → `UsgsClientError(match="unreachable")` after `call_count == 3` |
+| 4 | `test_fetch_http_4xx_raises_without_retry` | 400 → `UsgsClientError(match="400")` after `call_count == 1` (no retry) |
+
+Autouse fixture patches `UsgsClient._get.retry.wait` to `tenacity.wait_none()` so the module completes in milliseconds rather than ~3s.
+
+### `requirements-test.txt`
+- Added `respx==0.23.1` (latest stable; ~30 KB, MIT-licensed). Verified via `pip show` — only adds zero new transitive deps beyond what httpx already pulls.
+
+**Verifications**
+- `make check` — clean (all 6 linters, 0 errors).
+- `make test` — **39 passed in 5.56s** (35 existing + 4 new); no flakes; sandbox container cleaned up.
+
+**Deviations from original plan**
+1. **Retryable type narrowed from `httpx.HTTPError` → `(httpx.TransportError, httpx.TimeoutException)`.** Plan specified `httpx.HTTPError` as the retry trigger, but that's the base class of nearly every httpx exception, *including* `HTTPStatusError` (which `response.raise_for_status()` produces for 4xx). Using it would retry 4xx, directly contradicting the plan's other "4xx not retried" requirement. `TransportError` is the genuine "network failed" base class — exactly what we want to retry. The 4xx check now happens via `response.status_code` after the GET returns (which the retry decorator has already exited), so 4xx is never retried.
+2. **Final-attempt failure wrapped as `UsgsClientError`.** Plan said `UsgsClientError` covers "HTTP 4xx (non-retryable) or after final-attempt failure", but `@tenacity.retry(..., reraise=True)` only re-raises the underlying httpx exception. Added a `try/except _RETRYABLE` in `fetch` to wrap it as `UsgsClientError("unreachable…")` with `__cause__` chained. Now callers can catch a single typed exception for every USGS failure mode.
+3. **Extra defensive check: non-dict JSON.** USGS won't realistically return a JSON array or string, but the extra `isinstance(data, dict)` guard is one line and tightens the typed return contract (`dict[str, Any]`). Not tested explicitly.
+4. **Test fixture uses `getattr(..., "retry")` to defeat mypy on tenacity's dynamic attribute.** tenacity attaches the `Retrying` instance as `.retry` on decorated functions at runtime, but the type stubs don't expose it; `getattr` returns `Any` and lets the monkeypatch land without any `# type: ignore`. Documented in the fixture docstring.
+
+**Open follow-ups**
+- (Carry-over) Pin `amacneil/dbmate` image to a specific version.
+- (Carry-over) `pydantic-settings` still pinned but unused.
+- (Carry-over) Decide on Dockerfile `build-essential` purge.
+- (Carry-over) CI test-job docker pull warm-up (only if image-pull timeouts surface).
 
 **Proposed commit message**
 ```
