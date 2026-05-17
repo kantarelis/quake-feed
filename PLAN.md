@@ -38,7 +38,7 @@ The database layer is implemented end-to-end without any business logic on top o
 |---|------|--------|--------|
 | 1 | dbmate config + baseline migration | ✅ Done | `065ce98` |
 | 2 | Sandbox-test wiring (`make migrate-test` + CI job) | ✅ Done | `03c5af5` |
-| 3 | Connection layer + `ExtractTransformLoad` base (`database/main.py`) | ⬜ Not started | — |
+| 3 | Connection layer + `ExtractTransformLoad` base (`database/main.py`) | ✅ Done | `a3559f0` |
 | 4 | Pydantic row models (`database/models.py`) | ⬜ Not started | — |
 | 5 | Events + Revisions ETLs (`database/etls/events.py`, `database/etls/revisions.py`) | ⬜ Not started | — |
 | 6 | Ingestion runs ETL (`database/etls/ingestion_runs.py`) | ⬜ Not started | — |
@@ -46,7 +46,7 @@ The database layer is implemented end-to-end without any business logic on top o
 | 8 | Pretty-schema helper (`database/_pretty_schema.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 3.
+**Next:** Task 4.
 
 ---
 
@@ -183,23 +183,47 @@ fix(compose): mount postgres-db pgdata at /var/lib/postgresql for pg18
 
 ---
 
-## Task 3 — Connection layer + `ExtractTransformLoad` base
+## Task 3 — Connection layer + `ExtractTransformLoad` base ✅
 
-**Why now.** Every ETL inherits from this; build the foundation before the consumers.
+**Status:** Done · Commit `a3559f0`
 
-**Files created**
-- `database/main.py` — three things:
-  - `_get_pool()` — lazy singleton `psycopg.ConnectionPool` built from `get_environmental_variables().database`. `min_size=1, max_size=10`. Closes on shutdown (registered via `atexit` for the process).
-  - `@contextmanager transaction()` — yields a `psycopg.Connection` checked out of the pool, commits on clean exit, rolls back on exception, returns the connection to the pool in `finally`.
-  - `class ExtractTransformLoad` — base class with two protected helpers:
-    - `_execute(sql: str, params: tuple | None = None, *, fetch: Literal["one", "all", "none"] = "none") -> Any` — opens a `transaction()`, runs the cursor, returns rows or `None`.
-    - `_executemany(sql: str, rows: Iterable[tuple]) -> int` — batch insert/update; returns affected row count.
-    - Subclasses store any per-table config (table name, default columns) and expose typed methods on top. No magic.
+**Shipped** — 1 new file + 1 dep bump
 
-**Acceptance**
-- `python -c "from database.main import transaction, ExtractTransformLoad; print('OK')"` succeeds.
-- Smoke test (manual): `with transaction() as conn: conn.execute('SELECT 1')` returns the expected row against the running compose DB.
-- `make check` clean.
+### `database/main.py`
+- **`_get_pool()`** — lazy process-wide singleton built from `get_environmental_variables().database`. `min_size=1, max_size=10`. Connection params passed via `kwargs={"host", "port", "user", "password", "dbname"}` (avoids URL-encoding pitfalls on passwords with special characters). `open=True` so the pool eagerly verifies the DB is reachable at first use. Registers `_close_pool` via `atexit` on first call.
+- **`@contextmanager transaction()`** — yields a `psycopg.Connection` from `pool.connection()`. Delegates commit/rollback/return-to-pool to `psycopg_pool`'s own contract; the wrapper exists so callers depend on a stable name in our codebase rather than on the pool object directly.
+- **`class ExtractTransformLoad`** — base class with two protected helpers:
+  - `_execute(sql: LiteralString, params: Sequence[Any] | None = None, *, fetch: Literal["one", "all", "none"] = "none") -> Any` — opens a `transaction()`, runs the cursor with `row_factory=dict_row`, returns one dict / list of dicts / `None`.
+  - `_executemany(sql: LiteralString, rows: Iterable[Sequence[Any]]) -> int` — batch insert/update; returns `cur.rowcount`.
+
+### `requirements.txt`
+- **Added `psycopg-pool==3.3.1`.** The plan referenced `psycopg.ConnectionPool`, but the pool class actually lives in a separate `psycopg-pool` package (psycopg itself does not ship a pool). Pinned to the latest release; aligned with the existing `psycopg==3.3.4` line directly above it.
+
+**Verifications**
+- `make check` — clean (all 6 linters: isort, black, flake8, mypy, bandit, pyright). 0 errors.
+- `python -c "from database.main import transaction, ExtractTransformLoad; print('OK')"` — succeeds.
+- **Live smoke test** against a throwaway `timescale/timescaledb:latest-pg18` on `:5434` (same pattern as `make migrate-test`, source-and-export of `.env` with `DB_HOST=127.0.0.1 DB_PORT=5434` overrides):
+  - `transaction()` + `SELECT 1` → `(1,)` ✓
+  - `_execute(fetch="one")` `SELECT 42 AS answer` → `{'answer': 42}` ✓
+  - `_execute(fetch="all")` `SELECT generate_series(1,3) AS n` → `[{'n': 1}, {'n': 2}, {'n': 3}]` ✓
+  - `_executemany` of 3 INSERTs → `rowcount=3`; follow-up `SELECT count(*)` → `(3,)` ✓
+  - Rollback-on-exception: `CREATE TABLE` inside `transaction()` that raises → `to_regclass('public.should_rollback')` returns `None` ✓
+- `make test` — still the "no tests collected" early-exit (first real tests land in Task 5).
+- Throwaway container removed; no host-side leftovers.
+
+**Bugs found during verification (all fixed inline)**
+1. **Pyright rejected `sql: str`** for both `_execute` and `_executemany` — psycopg's `Connection.execute` / `Cursor.executemany` only accept `LiteralString` (PEP 675), `bytes`, `SQL`, or `Composed`. **Fix:** typed the `sql` parameter as `LiteralString`. Strictly stronger than `str` — string literals satisfy it, but `f"... {user_input}"` fails at type-check, which matches `CLAUDE.md`'s "always parameterized queries" rule. No functional change for callers.
+
+**Deviations from original plan**
+1. **`psycopg-pool` is a separate package, not part of `psycopg`.** Plan said "lazy singleton `psycopg.ConnectionPool`" — actually `psycopg_pool.ConnectionPool`. New dep at `==3.3.1` added to `requirements.txt`.
+2. **`sql` parameter typed `LiteralString`, not `str`.** Forced by pyright (see bug 1). Reads as a deliberate safety upgrade, not a workaround.
+3. **`_execute` returns `dict_row` dicts, not tuples.** Plan said `Any`; chose `dict_row` because it's friendlier for Pydantic model hydration in Tasks 4–7 (`EventRow(**row)` works directly). Reversible later if you'd rather tuples.
+4. **No re-exports from `database/__init__.py`.** Plan didn't ask for them, and the acceptance criterion imports from `database.main` directly. Left `database/__init__.py` empty.
+
+**Open follow-ups**
+- (Carry-over from Task 2) Pin `amacneil/dbmate` Docker image to a specific version.
+- (Carry-over from Epic 1) `pydantic-settings` still pinned but unused.
+- (Carry-over from Epic 1) Decide whether to purge `build-essential` from the Dockerfile.
 
 **Proposed commit message**
 ```
