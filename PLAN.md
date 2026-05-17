@@ -39,14 +39,14 @@ The database layer is implemented end-to-end without any business logic on top o
 | 1 | dbmate config + baseline migration | ✅ Done | `065ce98` |
 | 2 | Sandbox-test wiring (`make migrate-test` + CI job) | ✅ Done | `03c5af5` |
 | 3 | Connection layer + `ExtractTransformLoad` base (`database/main.py`) | ✅ Done | `a3559f0` |
-| 4 | Pydantic row models (`database/models.py`) | ⬜ Not started | — |
+| 4 | Pydantic row models (`database/models.py`) | ✅ Done | `606dc10` |
 | 5 | Events + Revisions ETLs (`database/etls/events.py`, `database/etls/revisions.py`) | ⬜ Not started | — |
 | 6 | Ingestion runs ETL (`database/etls/ingestion_runs.py`) | ⬜ Not started | — |
 | 7 | API keys + Alert filters ETLs (`database/etls/api_keys.py`, `database/etls/alert_filters.py`) | ⬜ Not started | — |
 | 8 | Pretty-schema helper (`database/_pretty_schema.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 4.
+**Next:** Task 5.
 
 ---
 
@@ -232,22 +232,43 @@ feat(db): add connection pool, transaction() context manager, and ExtractTransfo
 
 ---
 
-## Task 4 — Pydantic row models
+## Task 4 — Pydantic row models ✅
 
-**Why now.** Models are tiny but blocking — every ETL returns one.
+**Status:** Done · Commit `606dc10`
 
-**Files created**
-- `database/models.py` — one Pydantic `BaseModel` per row type, mirroring the migration columns exactly. Camel-vs-snake: snake everywhere; `from_attributes = True` on the configs so they accept `psycopg` row-dict access patterns.
-  - `EventRow` — every column of `quake.events`.
-  - `EventRevisionRow` — every column of `quake.event_revisions`.
-  - `ApiKeyRow` — every column of `quake.api_keys` **except** the raw key (it never lives in the row model; only the hash does).
-  - `AlertFilterRow`, `EndpointLockRow`, `IngestionRunRow` — same pattern.
-  - `models/events.py`, `models/alerts.py` (the higher-level domain models that consumers use) stay deferred to later epics; this file is row-shape only.
+**Shipped** — 1 new file
 
-**Acceptance**
-- `from database.models import EventRow, EventRevisionRow, ApiKeyRow, AlertFilterRow, EndpointLockRow, IngestionRunRow` succeeds.
-- Pydantic forbids extra fields (pydantic-mypy default from setup.cfg) — verified by attempting to instantiate one with a bogus kwarg and catching `ValidationError`.
-- `make check` clean (pydantic-mypy validates field types statically).
+### `database/models.py`
+Six Pydantic row models sharing a private `_RowBase` for config:
+
+- **`_RowBase(BaseModel)`** — `model_config = ConfigDict(extra="forbid", from_attributes=True)`. Runtime extra-forbid rejects unknown columns with `ValidationError`; `from_attributes` lets `Model.model_validate(obj)` hydrate from arbitrary objects (e.g., a psycopg row).
+- **`EventRow`** — 13 columns of `quake.events` (`event_id`, `time`, `magnitude`, `magnitude_type`, `depth_km`, `latitude`, `longitude`, `place`, `status`, `tsunami`, `url`, `inserted_at`, `updated_at`).
+- **`EventRevisionRow`** — 9 columns of `quake.event_revisions` (`id`, `event_id`, `observed_at`, three pairs of `old_*`/`new_*`).
+- **`ApiKeyRow`** — 7 columns of `quake.api_keys` (`id`, `key_hash`, `label`, `scopes: list[str]`, `created_at`, `last_seen_at`, `revoked_at`). **No `key` field** — raw keys live in Vault and never enter the row model.
+- **`AlertFilterRow`** — 12 columns of `quake.alert_filters`. Both bbox columns (`bbox_min_lat`, `bbox_min_lon`, `bbox_max_lat`, `bbox_max_lon`) and center+radius columns (`center_lat`, `center_lon`, `radius_km`) are nullable; shape XOR is enforced application-side.
+- **`EndpointLockRow`** — 5 columns of `quake.endpoint_locks`.
+- **`IngestionRunRow`** — 7 columns of `quake.ingestion_runs`.
+
+Type mapping mirrors the migration: `TIMESTAMPTZ → datetime`, `DOUBLE PRECISION → float`, `TEXT → str`, `BIGSERIAL/BIGINT/INTEGER → int`, `BOOLEAN → bool`, `TEXT[] → list[str]`. NOT NULL columns → required fields; nullable columns → `T | None = None`.
+
+**Verifications**
+- `make check` — clean (all 6 linters; pyright 0/0/0).
+- **Import smoke:** `from database.models import EventRow, EventRevisionRow, ApiKeyRow, AlertFilterRow, EndpointLockRow, IngestionRunRow` ✓.
+- **Happy-path construction** for each of the six models with realistic kwargs (e.g., `EventRow(event_id='nc1234', time=now, magnitude=4.2, latitude=37.8, longitude=-122.3, tsunami=False, inserted_at=now, updated_at=now)`) ✓.
+- **Runtime `extra="forbid"`:** `EventRow(..., bogus_field='nope')` raised `ValidationError` mentioning `bogus_field` ✓.
+- **Raw-key guarantee:** `ApiKeyRow(..., key='raw-secret')` raised `ValidationError` — the schema doesn't define `key`, and extra-forbid makes the absence enforceable at runtime (not just static-typing) ✓.
+- **`from_attributes=True`:** `EndpointLockRow.model_validate(<arbitrary object with the right attrs>)` succeeded ✓.
+- `make test` — still the "no tests collected" early-exit (Task 5 lands the first real tests).
+
+**Deviations from original plan**
+1. **Shared `_RowBase` instead of repeating `model_config` on each model.** Plan said "one Pydantic `BaseModel` per row type … `from_attributes = True` on the configs". Collapsed six identical config blocks into one private base class for DRY. Each row model still reads as a flat column list. Reversible if you'd rather see the config inlined on every model.
+2. **Pydantic v2 syntax** — `model_config = ConfigDict(extra="forbid", from_attributes=True)`. Plan used the v1-flavored phrasing (`from_attributes = True` on the configs); the codebase is on `pydantic==2.13.4`, so the v2 form is the correct equivalent. No behavioral difference.
+3. **Nullable columns default to `None`.** Plan didn't explicitly say either way; defaulting them lets callers build partial-row instances (e.g., a fresh `EventRevisionRow` with only the changed fields populated) without spelling out every NULL column. NOT NULL columns remain required — mirrors the SQL nullability exactly.
+
+**Open follow-ups**
+- (Carry-over from Task 2) Pin `amacneil/dbmate` Docker image to a specific version.
+- (Carry-over from Epic 1) `pydantic-settings` still pinned but unused.
+- (Carry-over from Epic 1) Decide whether to purge `build-essential` from the Dockerfile.
 
 **Proposed commit message**
 ```
