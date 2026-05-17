@@ -8,6 +8,8 @@ audit log.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from database.main import ExtractTransformLoad
 from database.models import EventRevisionRow
 
@@ -42,3 +44,17 @@ class RevisionsETL(ExtractTransformLoad):
             fetch="all",
         )
         return [EventRevisionRow.model_validate(r) for r in rows]
+
+    def count_since(self, since: datetime) -> int:
+        """Count revisions whose ``observed_at >= since``.
+
+        Used by the ingestion orchestrator to tally how many revision rows
+        the trigger wrote during a single poll cycle: capture a UTC
+        timestamp before the upsert, then call this after.
+        """
+        row = self._execute(
+            "SELECT count(*) AS n FROM quake.event_revisions WHERE observed_at >= %s",
+            (since,),
+            fetch="one",
+        )
+        return int(row["n"])
