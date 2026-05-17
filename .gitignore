@@ -2,6 +2,7 @@
 # Working / planning documents (local-only, never pushed)
 # ---------------------------------------------------------------------------
 vault_init_output.txt
+postgres.session.sql
 
 # ---------------------------------------------------------------------------
 # Environment / secrets
