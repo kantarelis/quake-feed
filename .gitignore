@@ -40,7 +40,6 @@ share/python-wheels/
 .coverage
 .coverage.*
 coverage.xml
-coverage.svg
 htmlcov/
 .cache/
 
