@@ -36,13 +36,13 @@ A separate `health_check` task pings the DB for liveness checks.
 | # | Task | Status | Commit |
 |---|------|--------|--------|
 | 1 | USGS HTTP client (`quake/ingestion/usgs/client.py`) | ✅ Done | `bb1c583` |
-| 2 | GeoJSON parser + `EventRow` mapping (`quake/ingestion/usgs/parser.py`) | ⬜ Not started | — |
+| 2 | GeoJSON parser + `EventRow` mapping (`quake/ingestion/usgs/parser.py`) | ✅ Done | `c2a2326` |
 | 3 | Ingestion orchestrator (`quake/events/ingest.py`) | ⬜ Not started | — |
 | 4 | Celery `poll_usgs` + Beat schedule + `health_check` (`quake/tasks.py`, `config.py`) | ⬜ Not started | — |
 | 5 | Integration test (`tests/integration/test_poll_usgs.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 2.
+**Next:** Task 3.
 
 ---
 
@@ -101,38 +101,52 @@ feat(ingestion): add USGS HTTP client with retry/backoff
 
 ---
 
-## Task 2 — GeoJSON parser + `EventRow` mapping
+## Task 2 — GeoJSON parser + `EventRow` mapping ✅
 
-**Why now.** Pure function, no I/O, no DB. Pairs naturally with a captured USGS response fixture so the test stays deterministic and offline-friendly.
+**Status:** Done · Commit `c2a2326`
 
-**Files created**
-- `quake/ingestion/usgs/parser.py`:
-  - `def parse_feed(geojson: dict) -> list[EventRow]` — pure transform from a USGS FeatureCollection dict to a list of `EventRow` instances.
-  - **USGS schema mapping** (per Feature):
-    | `EventRow` field | USGS source |
-    |---|---|
-    | `event_id` | `feature["id"]` |
-    | `time` | `datetime.fromtimestamp(feature["properties"]["time"] / 1000, tz=UTC)` (USGS gives ms since epoch UTC) |
-    | `magnitude` | `properties["mag"]` |
-    | `magnitude_type` | `properties["magType"]` |
-    | `depth_km` | `geometry["coordinates"][2]` |
-    | `latitude` | `geometry["coordinates"][1]` |
-    | `longitude` | `geometry["coordinates"][0]` |
-    | `place` | `properties["place"]` |
-    | `status` | `properties["status"]` |
-    | `tsunami` | `bool(properties["tsunami"])` (USGS uses int 0/1) |
-    | `url` | `properties["url"]` |
-    | `inserted_at`, `updated_at` | `datetime.now(timezone.utc)` (placeholder — DB defaults override on actual insert) |
-  - **Skip-and-warn-log** any Feature missing required fields (`id`, `properties.time`, `properties.mag`, `geometry.coordinates[0..2]`). Drop that feature, continue with the rest.
-- `tests/fixtures/usgs_all_hour.json` — captured USGS response (`curl … > tests/fixtures/usgs_all_hour.json`). 10–30 features is plenty.
-- `tests/unit/test_usgs_parser.py`:
-  - Loads the fixture, asserts `len(parse_feed(...)) == fixture.features.length` (minus any intentionally-malformed entries).
-  - Spot-checks 1–2 specific events for round-trip correctness (magnitude, time conversion ms→datetime, lat/lon order, tsunami int→bool).
-  - **Skip-malformed** — feed with one feature missing `properties.mag` → that feature dropped, others kept, log emitted.
+**Shipped** — 1 new module + 1 captured fixture + 1 test module
 
-**Acceptance**
-- `make check` clean.
-- New tests pass.
+### `quake/ingestion/usgs/parser.py` (88 lines)
+- **`parse_feed(geojson: dict[str, Any]) -> list[EventRow]`** — pure transform. Iterates `geojson["features"]`, calls `_feature_to_row` per item, filters out `None` returns.
+- **`_feature_to_row(feature, *, now)`** — private mapper. Returns `EventRow` or `None`.
+  - **Required fields** (drop + log on miss): `id`, `properties.time`, `properties.mag`, `geometry.coordinates[0..1]` (lat/lon).
+  - **Optional / nullable**: `magType`, `place`, `status`, `url`, `coordinates[2]` (depth — column is nullable).
+  - **Type conversions**:
+    - `time` (ms since epoch UTC) → `datetime.fromtimestamp(ms / 1000, tz=timezone.utc)`.
+    - `tsunami` (int 0/1) → `bool`; missing → `False`.
+  - `inserted_at` / `updated_at` set to a single `now = datetime.now(timezone.utc)` captured once per `parse_feed` call. DB defaults override on actual insert — placeholder lives with being throwaway.
+- Logger via `setup_logger("usgs-parser", "quake-feed")` per the project pattern; WARNING-level when skipping.
+
+### `tests/fixtures/usgs_all_hour.json`
+Real USGS response captured from `all_hour.geojson` (6 features at capture time). Curl'd straight into the fixtures dir — no `/tmp` scratch.
+
+### `tests/unit/test_usgs_parser.py` (104 lines)
+7 tests, all green:
+
+| # | Test | Coverage |
+|---|------|----------|
+| 1 | `test_parses_every_feature_in_fixture` | row count == feature count; all are `EventRow` |
+| 2 | `test_round_trips_known_event` | spot-check on the first event: mag/magType/place/status/url/lon/lat/depth/time ms→datetime/tsunami int→bool |
+| 3 | `test_skips_feature_missing_magnitude_and_keeps_the_rest` | drop one + log emitted; siblings unaffected |
+| 4 | `test_skips_feature_missing_coordinates` | empty coords array → dropped |
+| 5 | `test_handles_empty_feature_collection` | `{"features": []}` → `[]` |
+| 6 | `test_handles_missing_features_key` | dict without `features` → `[]` (defensive) |
+| 7 | `test_handles_missing_optional_depth` | 2-element coords (lat/lon only) → `depth_km is None` |
+
+**Verifications**
+- `make check` — clean (all 6 linters, 0 errors).
+- `make test` — **46 passed in 5.68s** (39 existing + 7 new); no flakes.
+
+**Deviations from original plan**
+1. **Captured fixture is 6 features, not the "10–30" the plan suggested.** USGS had 6 events in the past hour when curl'd — pragmatic call to use whatever was live rather than synthesize extras. Tests use `len(fixture.features)` so they're independent of count.
+2. **caplog assertion needed a `propagate=True` monkeypatch.** `setup_logger` sets `propagate=False` so its JSON handler is the sole production sink. pytest's `caplog` attaches at the root logger and can't see records from a non-propagating logger. The fix re-enables propagation **just for that one test** via `monkeypatch.setattr(logging.getLogger("usgs-parser"), "propagate", True)` — preserves the production design and respects the "no `# type: ignore` / no `# noqa`" rule. Documented in the test docstring.
+3. **Three extra defensive tests** beyond the plan's three explicit scenarios: empty FeatureCollection, missing `features` key, missing optional depth. Cheap to write; pin behavior that's likely-good but not load-bearing.
+4. **No `/tmp` scratch in the workflow.** Curl downloaded directly into `tests/fixtures/usgs_all_hour.json` (per the hygiene preference from Task 8 of Epic 2).
+5. **User decision (mid-task):** keep the captured fixture (vs. fully inline synthetic dicts). Fixture earns its keep as schema documentation and as a real-USGS schema-drift detector.
+
+**Open follow-ups**
+Unchanged from Task 1.
 
 **Proposed commit message**
 ```
