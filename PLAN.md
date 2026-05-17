@@ -42,11 +42,11 @@ The database layer is implemented end-to-end without any business logic on top o
 | 4 | Pydantic row models (`database/models.py`) | ✅ Done | `606dc10` |
 | 5 | Events + Revisions ETLs (`database/etls/events.py`, `database/etls/revisions.py`) | ✅ Done | `6265f91` |
 | 6 | Ingestion runs ETL (`database/etls/ingestion_runs.py`) | ✅ Done | `eb08c78` |
-| 7 | API keys + Alert filters ETLs (`database/etls/api_keys.py`, `database/etls/alert_filters.py`) | ⬜ Not started | — |
+| 7 | API keys + Alert filters ETLs (`database/etls/api_keys.py`, `database/etls/alert_filters.py`) | ✅ Done | `bbf7026` |
 | 8 | Pretty-schema helper (`database/_pretty_schema.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 7.
+**Next:** Task 8.
 
 ---
 
@@ -424,25 +424,68 @@ feat(db): add IngestionRuns ETL for per-poll observability records
 
 ---
 
-## Task 7 — API keys + Alert filters ETLs
+## Task 7 — API keys + Alert filters ETLs ✅
 
-**Why now.** The two auth-side ETLs are small and conceptually paired (a filter belongs to a key). Single commit.
+**Status:** Done · Commit `bbf7026`
 
-**Files created**
-- `database/etls/api_keys.py` — `ApiKeysETL(ExtractTransformLoad)`:
-  - `insert(key_hash: str, label: str | None, scopes: list[str]) -> int` — returns the new row's `id`.
-  - `get_by_hash(key_hash: str) -> ApiKeyRow | None`.
-  - `touch_last_seen(api_key_id: int) -> None` — `UPDATE ... SET last_seen_at = now()`.
-  - `revoke(api_key_id: int) -> None` — `UPDATE ... SET revoked_at = now()`.
-  - **Never stores or returns raw keys.** Hashing happens in the caller (Epic 5); this layer is hash-in / hash-out.
-- `database/etls/alert_filters.py` — `AlertFiltersETL(ExtractTransformLoad)`:
-  - `upsert(filter: AlertFilterRow) -> int` — keyed on `(api_key_id, id)`.
-  - `for_api_key(api_key_id: int) -> list[AlertFilterRow]`.
-  - `delete(filter_id: int, api_key_id: int) -> bool` — returns whether a row was removed (defensive against cross-key deletion).
-- `tests/unit/test_api_keys_etl.py` + `tests/unit/test_alert_filters_etl.py` — round-trip insert/get/update/delete for each.
+**Pre-work decision (open question #5 settled).** `EndpointLocksETL` **deferred to Epic 5** — lands when the admin-locks endpoint actually consumes it. Avoids speculative API surface and keeps Epic 2's ETLs to those with near-term callers.
 
-**Acceptance**
-- New tests green. `make check` clean.
+**Shipped** — 4 new files
+
+### `database/etls/api_keys.py` (58 lines)
+`ApiKeysETL(ExtractTransformLoad)` — hash-in / hash-out, no raw-key path:
+- **`insert(key_hash, label, scopes) -> int`** — returns the new BIGSERIAL id. Inherits column defaults for `created_at` and the optional timestamp fields.
+- **`get_by_hash(key_hash) -> ApiKeyRow | None`** — single-row SELECT scoped on the UNIQUE column.
+- **`touch_last_seen(api_key_id) -> None`** — `UPDATE … SET last_seen_at = now() WHERE id = %s`.
+- **`revoke(api_key_id) -> None`** — `UPDATE … SET revoked_at = now() WHERE id = %s AND revoked_at IS NULL`. The `revoked_at IS NULL` guard makes the call **idempotent** — a second revoke preserves the original timestamp rather than bumping it.
+
+### `database/etls/alert_filters.py` (135 lines after formatter)
+`AlertFiltersETL(ExtractTransformLoad)` — CRUD with cross-key defence:
+- **`insert(api_key_id, *, min_magnitude=None, bbox_*=None, center_*=None, radius_km=None) -> int`** — returns the new BIGSERIAL id. Accepts both bbox and center+radius column sets (filter shape XOR is enforced application-side, not by the table).
+- **`update(filter_id, api_key_id, *, …) -> bool`** — full-replacement UPDATE (PUT semantics, not PATCH). Includes `api_key_id` in the WHERE clause so a misbehaving caller can't update another key's filters by guessing ids. Returns `True` on hit, `False` on miss.
+- **`for_api_key(api_key_id) -> list[AlertFilterRow]`** — `WHERE api_key_id = %s ORDER BY id`.
+- **`delete(filter_id, api_key_id) -> bool`** — DELETE with the same cross-key WHERE scope. Returns whether a row was removed.
+
+### `tests/unit/test_api_keys_etl.py` (8 tests)
+
+| # | Test | Coverage |
+|---|------|----------|
+| 1 | `test_insert_returns_positive_id` | insert returns a positive int |
+| 2 | `test_get_by_hash_round_trips_every_field` | full round-trip including `scopes: list[str]` |
+| 3 | `test_get_by_hash_miss_returns_none` | unknown hash → `None` |
+| 4 | `test_insert_supports_null_label_and_empty_scopes` | nullable label + empty scopes array |
+| 5 | `test_duplicate_key_hash_raises` | UNIQUE constraint surfaces `psycopg.errors.UniqueViolation` |
+| 6 | `test_touch_last_seen_populates_timestamp` | before/after check on `last_seen_at` |
+| 7 | `test_revoke_sets_revoked_at` | revoke populates the timestamp |
+| 8 | `test_revoke_is_idempotent` | re-revoke preserves the original timestamp (pins the `WHERE revoked_at IS NULL` guard) |
+
+### `tests/unit/test_alert_filters_etl.py` (10 tests)
+
+| # | Test | Coverage |
+|---|------|----------|
+| 1 | `test_insert_returns_positive_id_and_persists` | insert + read-back of every field (center+radius variant) |
+| 2 | `test_insert_with_all_nulls_succeeds` | "any event" subscription with every shape column NULL |
+| 3 | `test_for_api_key_scoped_to_owner` | two keys, two filters — each key sees only its own |
+| 4 | `test_for_api_key_returns_empty_list_for_unknown_key` | unknown key → `[]` |
+| 5 | `test_update_modifies_row_returns_true` | happy-path PUT |
+| 6 | `test_update_cross_key_returns_false` | **cross-key defence:** wrong `api_key_id` → no-op + `False` |
+| 7 | `test_update_unknown_filter_returns_false` | unknown filter_id → `False` |
+| 8 | `test_delete_returns_true_and_removes_row` | happy-path DELETE |
+| 9 | `test_delete_cross_key_returns_false` | **cross-key defence:** wrong `api_key_id` → row stays, returns `False` |
+| 10 | `test_delete_unknown_filter_returns_false` | unknown filter_id → `False` |
+
+**Verifications**
+- `make check` — clean (all 6 linters, 0 errors).
+- `make test` — **35 passed in 5.02s** (10 alert_filters + 8 api_keys + 12 events + 5 ingestion_runs); no flakes; sandbox container cleaned up.
+
+**Deviations from original plan**
+1. **`AlertFiltersETL` exposes `insert` + `update` instead of `upsert(filter: AlertFilterRow) -> int`.** The plan's signature doesn't compose: `AlertFilterRow` is a *read* shape with required `id`, `created_at`, `updated_at` (the DB assigns them), so a caller can't supply one for a brand-new filter. Splitting into `insert` + `update` matches the API layer's POST / PATCH operations directly and avoids inventing an `id=0` sentinel or a write-only model class. `for_api_key` and `delete(filter_id, api_key_id) -> bool` ship as planned.
+2. **`revoke` is idempotent** (`WHERE revoked_at IS NULL`). Plan said plain `UPDATE … SET revoked_at = now()`. The "when was this revoked" answer should be stable across repeated calls; pinned by `test_revoke_is_idempotent`.
+3. **`update` is full-replacement (PUT, not PATCH).** Plan didn't specify; PUT is simpler and a PATCH path can be built on top by read-merge-write at the API layer.
+4. **Added `test_duplicate_key_hash_raises`.** The UNIQUE constraint on `key_hash` produces `psycopg.errors.UniqueViolation` on duplicate insert — beyond the plan's "round-trip insert/get/update/delete" scope, but worth pinning so a future "create or refresh" path doesn't silently swallow it.
+
+**Open follow-ups**
+Unchanged from Task 5. None added.
 
 **Proposed commit message**
 ```
