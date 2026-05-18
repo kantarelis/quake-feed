@@ -48,7 +48,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 3 | Events Manager + Views scaffold + `/events/recent` route | `quake/api/events/{main,views}.py`, `quake/main.py`, `tests/unit/test_events_api_recent.py` | ✅ |
 | 4 | `GET /events` combined-filter route + unit tests | `quake/api/events/views.py`, `tests/unit/test_events_api_query.py` | ✅ |
 | 5 | `GET /metrics` endpoint | `quake/api/main/{main,views,models}.py`, `quake/api/main/__init__.py`, `tests/unit/test_main_api.py` | ✅ |
-| 6 | `GET /env` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
+| 6 | `GET /env` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py`, `makefile` | ✅ |
 | 7 | Integration smoke — end-to-end through TestClient | `tests/integration/test_read_api.py` | ⬜ |
 
 ---
@@ -187,19 +187,20 @@ through MainManager. Epic 8 will add HTTP request metrics on top.
 
 ---
 
-### Task 6 — `GET /env` endpoint
+### Task 6 — `GET /env` endpoint ✅
 
-**Scope.**
+**Outcome.**
 
-- `quake/api/main/models.py`: new `EnvResponse(BaseModel)` — `environment: str`, `application_name: str`, `version: str`.
-- `quake/api/main/views.py`: `env()` coroutine — returns `EnvResponse(environment=get_environmental_variables().environment.value, application_name=get_environmental_variables().application_name, version=__version__)`.
-- `quake/api/main/main.py`: register `/env` route, `operation_id="main_env"`, tag `Main`.
-- Extend `tests/unit/test_main_api.py` with `test_env_returns_current_environment` — request `/env`, assert keys + `environment == "testing"` (the sandbox conftest pins this).
+Shipped as planned. Changes:
 
-**Acceptance.**
+- `quake/api/main/models.py`: added `EnvResponse(environment: str, application_name: str, version: str)`.
+- `quake/api/main/views.py`: added `env()` coroutine — `get_environmental_variables()` once, then `EnvResponse(environment=env.environment.value, application_name=env.application_name, version=__version__)`. Plan spec called the getter twice; collapsed to a single call (cosmetic, same result).
+- `quake/api/main/main.py`: registered `/env` with `operation_id="main_env"`, tag `Main`.
+- `tests/unit/test_main_api.py`: appended `test_env_returns_current_environment` asserting 200, exact key set `{environment, application_name, version}`, `environment == "testing"`, and non-empty `application_name` / `version`.
 
-- `make check` clean.
-- `make test` passes.
+**Side fix (not in the original Task 6 scope).** During Swagger-UI verification at `http://localhost:8000/docs` the user only saw `/health`. Root cause: `make restart` was `down + up` with no rebuild, so the container kept running a pre-Epic-4 image. Fix: `makefile` — `restart: down up` → `restart: down build up`. After a one-off `docker compose build backend && up -d` the running app now exposes all five endpoints (`/env`, `/events`, `/events/recent`, `/health`, `/metrics`). Logged here for traceability; user may commit the makefile change separately if desired.
+
+**Verification.** `make check` clean. `make test` passes — 74 unit tests (1 new for `/env`) + 1 integration. Live Swagger check at `/docs` shows every Epic-4 endpoint.
 
 **Commit message (proposed).**
 
