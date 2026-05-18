@@ -3,6 +3,12 @@
 Drives the assembled ``Quake.app`` through a ``TestClient`` so each
 endpoint is exercised through the full FastAPI stack the same way
 production clients hit it.
+
+Every endpoint here is **intentionally public** (no API key required)
+so ops + Prometheus can hit them unauthenticated. The fixture sets no
+``Authorization`` header on purpose; if a future change accidentally
+puts these routes behind :class:`quake.api.auth.Authenticate`, the
+existing 200 assertions flip to 401 and this file fails loudly.
 """
 
 from __future__ import annotations

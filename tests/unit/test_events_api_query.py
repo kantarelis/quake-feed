@@ -4,6 +4,12 @@ Drives the assembled ``Quake.app`` through a ``TestClient``. The
 ``EventsQuery`` validators (parsing ``near=lat,lon``, requiring
 ``near``/``radius_km`` together, rejecting naive datetimes) are
 exercised here through real HTTP requests.
+
+Every ``/events*`` route requires a valid API key (Epic 5 — Task 3);
+the ``client`` fixture issues one against the sandbox DB + a
+:class:`StubVault` and pre-loads the ``Authorization`` header so the
+existing query/validation assertions need no further change.
+``no_auth_client`` covers the 401 cases.
 """
 
 from __future__ import annotations
@@ -16,7 +22,9 @@ from fastapi.testclient import TestClient
 
 from database.etls.events import EventsETL
 from database.models import EventRow
+from quake.api.auth import get_vault_client
 from quake.main import Quake
+from tests._auth import StubVault, issue_test_key
 
 
 def _event(
@@ -46,7 +54,21 @@ def _event(
 
 @pytest.fixture
 def client() -> TestClient:
+    vault = StubVault()
     quake = Quake(logger=logging.getLogger("test-events-api-query"))
+    quake.app.dependency_overrides[get_vault_client] = lambda: vault
+    _, headers = issue_test_key(vault=vault)
+    c = TestClient(quake.app)
+    c.headers.update(headers)
+    return c
+
+
+@pytest.fixture
+def no_auth_client() -> TestClient:
+    """TestClient with no Authorization header — for the 401 cases."""
+    vault = StubVault()
+    quake = Quake(logger=logging.getLogger("test-events-api-query-noauth"))
+    quake.app.dependency_overrides[get_vault_client] = lambda: vault
     return TestClient(quake.app)
 
 
@@ -156,3 +178,16 @@ def test_query_invalid_near_format_is_422(client: TestClient) -> None:
 def test_query_naive_since_is_422(client: TestClient) -> None:
     response = client.get("/events", params={"since": "2026-01-01T00:00:00"})
     assert response.status_code == 422
+
+
+def test_query_requires_auth(no_auth_client: TestClient) -> None:
+    response = no_auth_client.get("/events")
+    assert response.status_code == 401
+
+
+def test_query_rejects_bad_key(no_auth_client: TestClient) -> None:
+    response = no_auth_client.get(
+        "/events",
+        headers={"Authorization": "Bearer qkf_deadbeef00000000000000000000beef"},
+    )
+    assert response.status_code == 401
