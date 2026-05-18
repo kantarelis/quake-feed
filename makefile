@@ -71,11 +71,16 @@ find-unused: ## Run vulture to surface possible dead code
 # ===========================================================================
 
 .PHONY: test test-report coverage-badge
-test: ## Run the test suite
-	$(PYTEST)
+test: ## Run the full test suite (unit + integration). Needs Docker + internet.
+	@$(PYTEST) --ignore=tests/integration; UNIT_RC=$$?; \
+		$(PYTEST) -m integration tests/integration/; INT_RC=$$?; \
+		if [ $$UNIT_RC -ne 0 ]; then exit $$UNIT_RC; fi; \
+		exit $$INT_RC
 
-test-report: ## Run tests, emit an HTML coverage report into htmlcov/, and open it in the default browser
-	@$(PYTEST) --cov=. --cov-report=html; RC=$$?; \
+test-report: ## Run the full suite, emit an HTML coverage report into htmlcov/, and open it in the default browser
+	@rm -f .coverage; \
+		$(PYTEST) --ignore=tests/integration --cov=. --cov-report=; UNIT_RC=$$?; \
+		$(PYTEST) -m integration tests/integration/ --cov=. --cov-append --cov-report=html; INT_RC=$$?; \
 		if [ -f htmlcov/index.html ]; then \
 			if command -v xdg-open >/dev/null 2>&1; then \
 				echo "Opening htmlcov/index.html in default browser..."; \
@@ -84,7 +89,8 @@ test-report: ## Run tests, emit an HTML coverage report into htmlcov/, and open 
 				echo "(xdg-open not found; open htmlcov/index.html manually)"; \
 			fi; \
 		fi; \
-		exit $$RC
+		if [ $$UNIT_RC -ne 0 ]; then exit $$UNIT_RC; fi; \
+		exit $$INT_RC
 
 coverage-badge: ## Generate coverage.svg from the latest coverage data
 	$(COVERAGE_BADGE) -f -o coverage.svg

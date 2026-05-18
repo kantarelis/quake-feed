@@ -25,7 +25,7 @@ The workflow exists so the user retains **100% ownership** of every commit. Full
 |---|------|--------|-------|
 | 1 | Repo scaffold + Docker Compose + CI stub | ✅ Done | The structural skeleton — no business logic yet. Commits `dca18b0..b225ab7`. |
 | 2 | Database layer (dbmate, baseline migration, ETL helpers) | ✅ Done | Baseline migration + sandbox-test CI + connection pool + Pydantic row models + ETLs for events/revisions/ingestion_runs/api_keys/alert_filters + pretty-schema helper. Commits `065ce98..27d4b40`. |
-| 3 | USGS ingestion worker | ⬜ Not started | Celery Beat every 60s; dedupe + revision tracking. |
+| 3 | USGS ingestion worker | ✅ Done | USGS HTTP client + GeoJSON parser + ingestion orchestrator + Celery `poll_usgs` (Beat every 60s) + `health_check` + self-hosted integration smoke. Commits `bb1c583..b4c5d96`. |
 | 4 | Read API (events endpoints) | ⬜ Not started | `/events/recent`, `/events?near=...`, `/events?min_magnitude=...`. |
 | 5 | API-key auth + admin surface | ⬜ Not started | `Authenticate` dependency, Vault-backed key set, admin scope, locks endpoint. |
 | 6 | SSE alerts (`/alerts/stream`) | ⬜ Not started | In-process pub/sub, per-key persistent filters, filter matcher. |
