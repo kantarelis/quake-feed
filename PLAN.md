@@ -98,35 +98,27 @@ in later tasks.
 
 ---
 
-### Task 2 — `make issue-api-key` + `make revoke-api-key`
+### Task 2 — `make issue-api-key` + `make revoke-api-key` ✅
 
-**Scope.**
+**Outcome.**
 
-- New `scripts/issue_api_key.py`:
-  - argparse: `--label <text>` (optional), `--scope <name>` (repeatable, e.g. `--scope admin`).
-  - `generate_raw_key()`, `hash_key()`, `ApiKeysETL().insert(...)`, `VaultClient().put_secret(vault_path(id), {"raw_key": raw, "label": label, "issued_at": now_iso})`.
-  - Stdout: prints the key_id, label, scopes, and the **raw key on its own line, once** with a "save this — it cannot be recovered" banner.
-  - Exit code 0 on success, non-zero on Vault/DB failures (rollback DB insert on Vault failure to keep them consistent).
-- New `scripts/revoke_api_key.py`:
-  - argparse: `--key-id <int>` (or `--label <text>` if unique).
-  - `ApiKeysETL().revoke(id)`, `VaultClient()` deletes the path (`hvac` v2 delete + destroy versions so the raw value is unrecoverable).
-  - Idempotent: revoking an already-revoked key prints "already revoked" and exits 0.
-- `makefile` targets:
-  - `issue-api-key: ## Issue a new API key (writes hash to DB, raw to Vault). Args: LABEL, SCOPES (comma-separated).`
-  - `revoke-api-key: ## Revoke an API key. Args: KEY_ID or LABEL.`
-- New `tests/unit/test_api_key_scripts.py`:
-  - Runs the script functions directly (no subprocess) against the sandbox DB + StubVault.
-  - `test_issue_inserts_db_row_and_vault_path`
-  - `test_issue_prints_raw_key_once`
-  - `test_issue_rolls_back_db_on_vault_failure`
-  - `test_revoke_marks_db_and_destroys_vault`
-  - `test_revoke_is_idempotent`
+Shipped with two scoped additions and one small CLI deviation. Changes:
 
-**Acceptance.**
+- `scripts/__init__.py` (new) — package marker.
+- `scripts/issue_api_key.py` (new) — `issue(*, label, scopes, vault, stdout) -> key_id` core + argparse CLI (`--label`, `--scopes <comma>`). Inserts the DB row, puts the Vault payload `{raw_key, label, issued_at}`, prints `key_id` / `label` / `scopes` / "save this — it cannot be recovered" banner + the raw key on its own line. On Vault failure: hard-deletes the row.
+- `scripts/revoke_api_key.py` (new) — `revoke(*, key_id, vault, stdout, stderr) -> int` core + argparse CLI (`--key-id`). Idempotent: re-runs print "already revoked"; unknown ids exit 2.
+- `database/etls/api_keys.py` — added `get_by_id(id)` (needed for revoke's idempotency check) and `delete(id)` (used by issue's rollback path; distinct from `revoke` which leaves a tombstone).
+- `functions/vault.py` — added `delete_secret(path)` via `delete_metadata_and_all_versions` so the raw value can't be recovered from version history. Idempotent (missing path → no-op).
+- `tests/_auth.py` — `StubVault.delete_secret(path)` mirroring the real client.
+- `makefile` — `issue-api-key` and `revoke-api-key` targets under a new "API-key issuance / revocation" section. Both source `.env`; revoke requires `KEY_ID` and prints usage if missing. **Removed** the pre-existing Epic-5 placeholder stubs at lines 263-268 ("`(stub) not yet implemented`") that were shadowing the real targets — `make check` emitted "overriding recipe" warnings before the cleanup.
+- `tests/unit/test_api_key_scripts.py` (new) — six tests: DB+Vault writes, single raw-key print, rollback on Vault failure, revoke happy path, idempotency message, unknown-id exit code.
 
-- `make check` clean.
-- `make test` passes.
-- Manual smoke (no automated assertion): `make issue-api-key LABEL=dev` against the live stack writes Vault + DB, prints the raw key.
+**Deviations from spec.**
+
+1. **Revoke takes `--key-id` only, not `--label`.** Plan said "KEY_ID or LABEL if unique"; labels aren't `UNIQUE` in the schema, so "if unique" needs a count query + ambiguous-error path that adds material complexity. The `key_id` is in the issue output anyway. Trivial to add label lookup if you want it.
+2. **Two extra ETL methods** (`ApiKeysETL.get_by_id`, `ApiKeysETL.delete`) and **one extra Vault method** (`VaultClient.delete_secret`). All directly required by the script logic; no speculative surface added. Inline docstrings explain the why.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 88 unit tests (6 new under `test_api_key_scripts.py`) + 2 integration. Manual: live `make issue-api-key LABEL=dev` was not exercised in this task but will be by the integration smoke in Task 7.
 
 **Commit message (proposed).**
 
@@ -137,6 +129,9 @@ Issuance generates qkf_<hex32>, persists the hash in quake.api_keys,
 stores the raw value at secret/api-keys/<id>, prints raw once.
 Revoke flips revoked_at and destroys the Vault path. Both idempotent
 where it makes sense.
+
+Adds ApiKeysETL.get_by_id + delete and VaultClient.delete_secret to
+support the script flows; removes the old (stub) makefile entries.
 ```
 
 ---
