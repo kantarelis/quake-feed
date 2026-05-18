@@ -45,7 +45,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 |---|------|-------|--------|
 | 1 | API request/response Pydantic models | `quake/api/events/models.py` | ✅ |
 | 2 | `EventsETL.query()` — combined-filter SQL + unit test | `database/etls/events.py`, `tests/unit/test_events_etl.py` | ✅ |
-| 3 | Events Manager + Views scaffold + `/events/recent` route | `quake/api/events/{main,views}.py`, `quake/main.py`, `tests/unit/test_events_api_recent.py` | ⬜ |
+| 3 | Events Manager + Views scaffold + `/events/recent` route | `quake/api/events/{main,views}.py`, `quake/main.py`, `tests/unit/test_events_api_recent.py` | ✅ |
 | 4 | `GET /events` combined-filter route + unit tests | `quake/api/events/views.py`, `tests/unit/test_events_api_query.py` | ⬜ |
 | 5 | `GET /metrics` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
 | 6 | `GET /env` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
@@ -109,24 +109,18 @@ per parameter. Powers the upcoming GET /events read endpoint.
 
 ---
 
-### Task 3 — Events Manager + Views scaffold + `/events/recent`
+### Task 3 — Events Manager + Views scaffold + `/events/recent` ✅
 
-**Scope.**
+**Outcome.**
 
-- New `quake/api/events/main.py`: `EventsManager` with `router = APIRouter(prefix="/events")`, instantiates `EventsManagerViews`, `.run()` wires `/recent`.
-- New `quake/api/events/views.py`: `EventsManagerViews` with one coroutine `recent(query: RecentEventsQuery = Depends())` that calls `EventsETL().recent(query.limit)` and returns `EventsListResponse(count=..., events=[EventResponse.model_validate(r) for r in rows])`.
-- `quake/main.py`: import `EventsManager`, construct it, mount its router.
-- New `tests/unit/test_events_api_recent.py`:
-  - Helper to build a `TestClient` over the `Quake.app` (factory uses a stub logger).
-  - `test_recent_returns_seeded_events_newest_first` — seed three rows with distinct times, call `/events/recent`, assert order + count.
-  - `test_recent_respects_limit` — seed five rows, call `/events/recent?limit=2`, assert two rows.
-  - `test_recent_rejects_invalid_limit` — `/events/recent?limit=0` → 422.
-  - `test_recent_empty` — no rows, returns `{"count": 0, "events": []}`.
+Shipped as planned, no deviations. Changes:
 
-**Acceptance.**
+- `quake/api/events/views.py` (new): `EventsManagerViews.recent(query: RecentEventsQuery = Depends()) -> EventsListResponse` — instantiates `EventsETL()` per request, calls `recent(query.limit)`, wraps rows in `EventResponse.model_validate(...)`.
+- `quake/api/events/main.py` (new): `EventsManager` mirroring `MainManager` shape — `APIRouter(prefix="/events")`, `run()` registers `/recent` with `operation_id="events_recent"`, tag `Events`.
+- `quake/main.py`: imports `EventsManager`, constructs it, mounts its router after `MainManager`.
+- `tests/unit/test_events_api_recent.py` (new): the four planned tests. `client` fixture builds a `TestClient(Quake(logger).app)`; `events` fixture provides an `EventsETL` for seeding. Tests exercise newest-first ordering, `limit=2` honored, `limit=0 → 422`, empty-DB shape `{"count": 0, "events": []}`.
 
-- `make check` clean.
-- `make test` passes; OpenAPI doc at `/docs` shows `events_recent` under the `Events` tag (manual verification only, no test).
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 64 unit tests (4 new under `/events/recent`) + 1 integration. `events_recent` will appear under the `Events` tag in `/docs` (manual visual check; not asserted in a test per spec).
 
 **Commit message (proposed).**
 
