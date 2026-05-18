@@ -55,7 +55,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | # | Task | Files | Status |
 |---|------|-------|--------|
 | 1 | Auth primitives — `Authenticate` dep + key hashing + Vault key layout + `docs/vault.md` | `quake/api/auth.py`, `docs/vault.md`, `tests/unit/test_auth.py`, `tests/_auth.py`, `makefile` | ✅ |
-| 2 | `make issue-api-key` + `make revoke-api-key` + scripts + unit tests | `scripts/{issue,revoke}_api_key.py`, `makefile`, `tests/unit/test_api_key_scripts.py` | ⬜ |
+| 2 | `make issue-api-key` + `make revoke-api-key` + scripts + unit tests | `scripts/{issue,revoke}_api_key.py`, `makefile`, `tests/unit/test_api_key_scripts.py`, `database/etls/api_keys.py`, `functions/vault.py`, `tests/_auth.py` | ✅ |
 | 3 | Retrofit `/events*` with `Authenticate()` (no scope) | `quake/api/events/main.py`, `tests/unit/test_events_api_recent.py`, `tests/unit/test_events_api_query.py` | ⬜ |
 | 4 | `EndpointLocksETL` + `poll_usgs` gating on `INGESTION_LOCK` | `database/etls/endpoint_locks.py`, `quake/events/ingest.py`, `tests/unit/test_endpoint_locks_etl.py`, `tests/unit/test_ingest.py` | ⬜ |
 | 5 | `/admin/locks` Manager + Views (admin-scoped) | `quake/api/locks/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_locks_api.py` | ⬜ |
