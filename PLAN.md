@@ -56,7 +56,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 |---|------|-------|--------|
 | 1 | Auth primitives — `Authenticate` dep + key hashing + Vault key layout + `docs/vault.md` | `quake/api/auth.py`, `docs/vault.md`, `tests/unit/test_auth.py`, `tests/_auth.py`, `makefile` | ✅ |
 | 2 | `make issue-api-key` + `make revoke-api-key` + scripts + unit tests | `scripts/{issue,revoke}_api_key.py`, `makefile`, `tests/unit/test_api_key_scripts.py`, `database/etls/api_keys.py`, `functions/vault.py`, `tests/_auth.py` | ✅ |
-| 3 | Retrofit `/events*` with `Authenticate()` (no scope) | `quake/api/events/main.py`, `tests/unit/test_events_api_recent.py`, `tests/unit/test_events_api_query.py` | ⬜ |
+| 3 | Retrofit `/events*` with `Authenticate()` (no scope) | `quake/api/events/main.py`, `tests/unit/test_events_api_recent.py`, `tests/unit/test_events_api_query.py`, `tests/unit/test_main_api.py`, `tests/integration/test_read_api.py` | ✅ |
 | 4 | `EndpointLocksETL` + `poll_usgs` gating on `INGESTION_LOCK` | `database/etls/endpoint_locks.py`, `quake/events/ingest.py`, `tests/unit/test_endpoint_locks_etl.py`, `tests/unit/test_ingest.py` | ⬜ |
 | 5 | `/admin/locks` Manager + Views (admin-scoped) | `quake/api/locks/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_locks_api.py` | ⬜ |
 | 6 | `/admin/ingest/*` Manager + Views (admin-scoped, async trigger) | `quake/api/ingest/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_ingest_api.py` | ⬜ |
@@ -136,29 +136,36 @@ support the script flows; removes the old (stub) makefile entries.
 
 ---
 
-### Task 3 — Retrofit `/events*` with `Authenticate()`
+### Task 3 — Retrofit `/events*` with `Authenticate()` ✅
 
-**Scope.**
+**Outcome.**
 
-- `quake/api/events/main.py`: both routes (`/recent`, `""`) gain `dependencies=[Depends(Authenticate())]` (no scope).
+Shipped as planned, plus one transitively-required update to the integration smoke. Changes:
+
+- `quake/api/events/main.py`: `EventsManager.__init__` now constructs the router with `dependencies=[Depends(Authenticate())]` (router-level, no scope). One change, both routes inherit.
 - `tests/unit/test_events_api_recent.py` and `tests/unit/test_events_api_query.py`:
-  - Update the existing `client` fixture (or add an `auth_client`) to issue a test key via `tests/_auth.py` and pass the `Authorization` header on every request.
-  - Add per-file `test_*_requires_auth` cases hitting the routes **without** a header → 401, and with an obviously bad key → 401.
-- `/health`, `/metrics`, `/env` stay open — explicit `test_main_api.py` assertion that no key is needed (already passes; just leave a comment so it doesn't regress).
+  - `client` fixture wraps the existing setup with `StubVault` + `app.dependency_overrides[get_vault_client]` + `issue_test_key(...)` + `c.headers.update(headers)`. Every previously-passing assertion keeps working unchanged.
+  - New `no_auth_client` fixture (same Vault override, no header) for negative tests.
+  - Two new tests per file: `*_requires_auth` (no header → 401) and `*_rejects_bad_key` (well-formed but unknown key → 401).
+- `tests/unit/test_main_api.py`: module docstring expanded to call out that `/health` / `/metrics` / `/env` are intentionally public and the fixture's lack of an `Authorization` header is a load-bearing regression guard.
+- `tests/integration/test_read_api.py`:
+  - Auth imports + StubVault override + issued key folded into the `client` fixture.
+  - `client` now depends on `clean_events` so the TRUNCATE runs **before** the key is issued (without that, the truncate wiped the row and every protected request 401'd). Test function signature dropped its now-redundant `clean_events` parameter; a comment notes the transitive dep.
+  - `quake.api_keys` added to the integration TRUNCATE set so issued keys don't leak across runs.
 
-**Acceptance.**
+**Deviation from spec.** Plan only listed the two unit-test files. The integration smoke broke transitively when `/events*` went protected; updated with the same StubVault-override + pre-loaded-header pattern rather than letting Task 7 inherit a broken intermediate state.
 
-- `make check` clean.
-- `make test` passes; every previously-passing `/events*` test still passes (now with an auth header), plus the new 401 cases.
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 92 unit tests (4 new under `/events*` for the 401 cases) + 2 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(api): require API key on /events and /events/recent
 
-Wires Depends(Authenticate()) onto both EventsManager routes. Public
-endpoints (/health, /metrics, /env) stay open. Test fixtures issue a
-sandbox-DB-backed key via tests/_auth.py.
+Wires Depends(Authenticate()) at the EventsManager router level.
+Public endpoints (/health, /metrics, /env) stay open. Test fixtures
+issue a sandbox-DB-backed key via tests/_auth.py; the integration
+smoke gets the same StubVault override.
 ```
 
 ---
