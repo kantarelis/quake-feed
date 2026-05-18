@@ -162,14 +162,20 @@ reset: full-clean build up ## Nuke everything, rebuild the image, bring the stac
 # `vault server -dev` auto-initializes/unseals, so init/unseal/seal are no-ops
 # in the current compose setup. The targets exist so the operator interface
 # stays stable when/if Vault flips to production mode.
+#
+# VAULT_EXEC pins VAULT_ADDR to the in-container HTTP listener; without it
+# the CLI defaults to https://127.0.0.1:8200 and fails against the dev-mode
+# server with "server gave HTTP response to HTTPS client".
 # ===========================================================================
+
+VAULT_EXEC := $(DOCKER) exec -e VAULT_ADDR=http://127.0.0.1:8200 quake_vault
 
 .PHONY: vault-status vault-init vault-unseal vault-seal
 vault-status: ## Show seal/init status of the running Vault container
-	@$(DOCKER) exec quake_vault vault status || true
+	@$(VAULT_EXEC) vault status || true
 
 vault-init: ## Initialize Vault; writes keys to vault_init_output.txt (gitignored)
-	@$(DOCKER) exec quake_vault vault operator init -key-shares=5 -key-threshold=3 > vault_init_output.txt
+	@$(VAULT_EXEC) vault operator init -key-shares=5 -key-threshold=3 > vault_init_output.txt
 	@echo "Init output saved to vault_init_output.txt. Update .env with the unseal keys + root token."
 
 vault-unseal: ## Unseal Vault using VAULT_UNSEAL_KEYS from .env
@@ -178,12 +184,12 @@ vault-unseal: ## Unseal Vault using VAULT_UNSEAL_KEYS from .env
 		echo "VAULT_UNSEAL_KEYS empty in .env; run 'make vault-init' first."; exit 1; \
 	fi; \
 	IFS=','; for k in $$VAULT_UNSEAL_KEYS; do \
-		$(DOCKER) exec quake_vault vault operator unseal "$$k"; \
+		$(VAULT_EXEC) vault operator unseal "$$k"; \
 	done
 
 vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 	@set -a; . ./.env; set +a; \
-	$(DOCKER) exec -e VAULT_TOKEN="$$VAULT_TOKEN" quake_vault vault operator seal
+	$(DOCKER) exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$$VAULT_TOKEN" quake_vault vault operator seal
 
 # ===========================================================================
 # Database migrations (dbmate)
