@@ -9,3 +9,9 @@ class HealthResponse(BaseModel):
     status: str
     service: str
     version: str
+
+
+class EnvResponse(BaseModel):
+    environment: str
+    application_name: str
+    version: str

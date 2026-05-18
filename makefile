@@ -130,7 +130,7 @@ up: install-env ## Bring the full stack up (creates .env if missing)
 down: ## Stop and remove containers (named volumes preserved)
 	$(COMPOSE) down
 
-restart: down up ## Bring the stack down and back up
+restart: down build up ## Bring the stack down, rebuild the app image, and back up
 
 logs: ## Tail aggregated container logs
 	$(COMPOSE) logs -f

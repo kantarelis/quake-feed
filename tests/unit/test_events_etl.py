@@ -192,3 +192,88 @@ def test_near_includes_close_excludes_far(events: EventsETL) -> None:
     assert "oakland" in ids
     assert "sf" in ids
     assert "sacramento" not in ids
+
+
+# ---------------------------------------------------------------------------
+# query — combined-filter read powering GET /events
+# ---------------------------------------------------------------------------
+
+
+def test_query_no_filters_returns_recent(events: EventsETL) -> None:
+    """All-None filters → every row, newest first."""
+    t0 = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    events.upsert(_event("oldest", time=t0))
+    events.upsert(_event("middle", time=t0 + timedelta(hours=1)))
+    events.upsert(_event("newest", time=t0 + timedelta(hours=2)))
+
+    out = events.query()
+    assert [e.event_id for e in out] == ["newest", "middle", "oldest"]
+
+
+def test_query_min_magnitude_only(events: EventsETL) -> None:
+    t0 = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    events.upsert(_event("small", time=t0, magnitude=2.0))
+    events.upsert(_event("medium", time=t0 + timedelta(hours=1), magnitude=4.5))
+    events.upsert(_event("large", time=t0 + timedelta(hours=2), magnitude=6.0))
+
+    out = events.query(min_magnitude=4.0)
+    assert [e.event_id for e in out] == ["large", "medium"]
+
+
+def test_query_since_only(events: EventsETL) -> None:
+    t0 = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    events.upsert(_event("old", time=t0, magnitude=5.0))
+    events.upsert(_event("new", time=t0 + timedelta(hours=5), magnitude=5.0))
+
+    out = events.query(since=t0 + timedelta(hours=1))
+    assert [e.event_id for e in out] == ["new"]
+
+
+def test_query_near_only(events: EventsETL) -> None:
+    """Same Berkeley-centred fixture as test_near, exercised through query()."""
+    events.upsert(_event("oakland", latitude=37.80, longitude=-122.27))
+    events.upsert(_event("sf", latitude=37.77, longitude=-122.41))
+    events.upsert(_event("sacramento", latitude=38.58, longitude=-121.49))
+
+    out = events.query(near=(37.87, -122.27), radius_km=50)
+    ids = {e.event_id for e in out}
+    assert ids == {"oakland", "sf"}
+
+
+def test_query_combined(events: EventsETL) -> None:
+    """Magnitude + since + near applied together should narrow to one row."""
+    t0 = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    # Too small.
+    events.upsert(
+        _event("small_nearby", time=t0 + timedelta(hours=3), magnitude=2.0, latitude=37.80, longitude=-122.27)
+    )
+    # Too old.
+    events.upsert(_event("old_nearby", time=t0, magnitude=5.0, latitude=37.80, longitude=-122.27))
+    # Too far.
+    events.upsert(_event("far_strong", time=t0 + timedelta(hours=3), magnitude=5.0, latitude=38.58, longitude=-121.49))
+    # The single match: recent, strong, nearby.
+    events.upsert(_event("match", time=t0 + timedelta(hours=3), magnitude=5.0, latitude=37.77, longitude=-122.41))
+
+    out = events.query(
+        near=(37.87, -122.27),
+        radius_km=50,
+        min_magnitude=4.0,
+        since=t0 + timedelta(hours=1),
+    )
+    assert [e.event_id for e in out] == ["match"]
+
+
+def test_query_respects_limit(events: EventsETL) -> None:
+    t0 = datetime(2026, 5, 17, 12, 0, tzinfo=timezone.utc)
+    for i in range(5):
+        events.upsert(_event(f"e{i}", time=t0 + timedelta(minutes=i)))
+
+    assert len(events.query(limit=3)) == 3
+
+
+def test_query_partial_geo_args_raise(events: EventsETL) -> None:
+    """near without radius_km (or vice versa) is a programmer error — raise."""
+    with pytest.raises(ValueError, match="near and radius_km"):
+        events.query(near=(37.87, -122.27))
+    with pytest.raises(ValueError, match="near and radius_km"):
+        events.query(radius_km=50)

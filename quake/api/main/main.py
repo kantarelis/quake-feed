@@ -29,4 +29,22 @@ class MainManager:
             operation_id="main_health",
             tags=["Main"],
         )
+        self.router.add_api_route(
+            "/metrics",
+            endpoint=self.views.metrics,
+            methods=["GET"],
+            summary="Prometheus metrics",
+            description="Prometheus text exposition for every metric on the default registry.",
+            operation_id="main_metrics",
+            tags=["Main"],
+        )
+        self.router.add_api_route(
+            "/env",
+            endpoint=self.views.env,
+            methods=["GET"],
+            summary="Running environment summary",
+            description="Returns ENVIRONMENT, APPLICATION_NAME, and the running version.",
+            operation_id="main_env",
+            tags=["Main"],
+        )
         return self.router
