@@ -11,10 +11,9 @@ Exposes:
   into the sandbox DB + stub vault and returns the raw key together
   with a ready-to-use ``Authorization`` header dict.
 
-``delete_secret`` is deliberately omitted at this stage — it lands
-together with the real :class:`VaultClient.delete_secret` in Task 2
-(revoke script), keeping the stub surface in lockstep with the real
-client.
+The stub mirrors :class:`functions.vault.VaultClient` 1:1 for the
+methods :mod:`quake.api.auth` and the issue/revoke scripts use:
+``get_secret``, ``put_secret``, ``list_keys``, ``delete_secret``.
 """
 
 from __future__ import annotations
@@ -40,6 +39,9 @@ class StubVault:
     def list_keys(self, path: str) -> list[str]:
         prefix = path.rstrip("/") + "/"
         return [k.removeprefix(prefix).split("/")[0] for k in self._store if k.startswith(prefix)]
+
+    def delete_secret(self, path: str) -> None:
+        self._store.pop(path, None)
 
 
 def issue_test_key(

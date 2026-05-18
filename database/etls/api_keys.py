@@ -35,6 +35,27 @@ class ApiKeysETL(ExtractTransformLoad):
         )
         return ApiKeyRow.model_validate(row) if row is not None else None
 
+    def get_by_id(self, api_key_id: int) -> ApiKeyRow | None:
+        """Return the row with this ``id``, or ``None`` on miss."""
+        row = self._execute(
+            "SELECT * FROM quake.api_keys WHERE id = %s",
+            (api_key_id,),
+            fetch="one",
+        )
+        return ApiKeyRow.model_validate(row) if row is not None else None
+
+    def delete(self, api_key_id: int) -> None:
+        """Hard-delete a row.
+
+        Used only by the issuance rollback path when the Vault put fails —
+        the row was never functional, so leaving a revoked tombstone would
+        be misleading. Operator-initiated takedowns use :meth:`revoke`.
+        """
+        self._execute(
+            "DELETE FROM quake.api_keys WHERE id = %s",
+            (api_key_id,),
+        )
+
     def touch_last_seen(self, api_key_id: int) -> None:
         """Stamp ``last_seen_at = now()`` for the given key."""
         self._execute(

@@ -192,6 +192,22 @@ vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 	$(DOCKER) exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$$VAULT_TOKEN" quake_vault vault operator seal
 
 # ===========================================================================
+# API-key issuance / revocation
+# Both scripts talk to the running compose stack (Vault on $VAULT_PORT, DB
+# on $DB_PORT). Issuance prints the raw key on stdout exactly once.
+# ===========================================================================
+
+.PHONY: issue-api-key revoke-api-key
+issue-api-key: ## Issue a new API key. Args: LABEL=<tag>, SCOPES=<comma>
+	@set -a; . ./.env; set +a; \
+	$(PY) scripts/issue_api_key.py $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
+
+revoke-api-key: ## Revoke an API key by id. Args: KEY_ID=<id>
+	@if [ -z "$(KEY_ID)" ]; then echo "Usage: make revoke-api-key KEY_ID=<id>"; exit 1; fi
+	@set -a; . ./.env; set +a; \
+	$(PY) scripts/revoke_api_key.py --key-id $(KEY_ID)
+
+# ===========================================================================
 # Database migrations (dbmate)
 # `db-migrate` and `db-schema` target the running compose DB.
 # `migrate-test` spins up a throwaway TimescaleDB on :5433 and exercises the
@@ -239,17 +255,6 @@ db-schema: ## Dump local schema to database/schema.sql (gitignored) and prettify
 	DATABASE_URL="postgres://$$DB_USERNAME:$$DB_PASSWORD@127.0.0.1:$$DB_PORT/$$DB_NAME?sslmode=disable" \
 	$(DBMATE) $(DBMATE_FLAGS) dump
 	$(PY) -m database._pretty_schema
-
-# ===========================================================================
-# API keys (Epic 5 placeholders)
-# ===========================================================================
-
-.PHONY: issue-api-key revoke-api-key
-issue-api-key: ## (stub) Mint a new API key into Vault
-	@echo "not yet implemented (Epic 5)"
-
-revoke-api-key: ## (stub) Revoke an existing API key
-	@echo "not yet implemented (Epic 5)"
 
 # ===========================================================================
 # Frontend (Epic 7 placeholders)
