@@ -29,4 +29,17 @@ class EventsManager:
             operation_id="events_recent",
             tags=["Events"],
         )
+        self.router.add_api_route(
+            "",
+            endpoint=self.views.query,
+            methods=["GET"],
+            summary="Query earthquakes",
+            description=(
+                "Filter earthquakes by any combination of near=lat,lon + "
+                "radius_km, min_magnitude, since (timezone-aware), and limit. "
+                "All filters are optional and combinable."
+            ),
+            operation_id="events_query",
+            tags=["Events"],
+        )
         return self.router
