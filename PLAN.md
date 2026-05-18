@@ -43,7 +43,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 
 | # | Task | Files | Status |
 |---|------|-------|--------|
-| 1 | API request/response Pydantic models | `quake/api/events/models.py` | ⬜ |
+| 1 | API request/response Pydantic models | `quake/api/events/models.py` | ✅ |
 | 2 | `EventsETL.query()` — combined-filter SQL + unit test | `database/etls/events.py`, `tests/unit/test_events_etl.py` | ⬜ |
 | 3 | Events Manager + Views scaffold + `/events/recent` route | `quake/api/events/{main,views}.py`, `quake/main.py`, `tests/unit/test_events_api_recent.py` | ⬜ |
 | 4 | `GET /events` combined-filter route + unit tests | `quake/api/events/views.py`, `tests/unit/test_events_api_query.py` | ⬜ |
@@ -53,26 +53,25 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 
 ---
 
-### Task 1 — API request/response Pydantic models
+### Task 1 — API request/response Pydantic models ✅
 
-**Scope.**
+**Outcome.**
 
-- New file `quake/api/events/models.py`.
-- `EventResponse(BaseModel)` — public DTO for one event. Fields mirror `database.models.EventRow` minus `inserted_at` and `updated_at`. `ConfigDict(from_attributes=True)` so `EventResponse.model_validate(event_row)` works directly.
-- `EventsListResponse(BaseModel)` — `count: int` + `events: list[EventResponse]`. Wrapping in an envelope leaves room for future fields (e.g. paging cursors) without breaking clients.
-- `RecentEventsQuery(BaseModel)` — `limit: int` constrained to `1 <= limit <= 1000`, default `100`. Used as a dependency for `/events/recent`.
-- `EventsQuery(BaseModel)` — all-optional combined query:
-  - `near: str | None` (raw `"lat,lon"` string; parsed in a `@field_validator` into a `(lat, lon)` tuple, with range checks `-90 <= lat <= 90`, `-180 <= lon <= 180`).
-  - `radius_km: float | None` (must be `> 0` and `<= 20_000`).
-  - `min_magnitude: float | None` (typical range `-1.0 <= x <= 10.0`).
-  - `since: datetime | None` (must be timezone-aware; reject naive datetimes in a `@field_validator`).
-  - `limit: int` constrained to `1 <= limit <= 1000`, default `100`.
-  - `@model_validator(mode="after")`: enforce `(near is None) == (radius_km is None)` — partial geographic input is a 422.
+Shipped as planned, no deviations. `quake/api/events/models.py` created with:
 
-**Acceptance.**
+- `EventResponse` — mirrors `database.models.EventRow` (lines 31–46) minus `inserted_at`/`updated_at`. `ConfigDict(from_attributes=True)` set so `model_validate(row)` consumes an `EventRow` directly.
+- `EventsListResponse` — `count: int` + `events: list[EventResponse]` envelope.
+- `RecentEventsQuery` — `limit: int = Field(default=100, ge=1, le=1000)`.
+- `EventsQuery` — all-optional combined query with the four filters + `limit`. Implements:
+  - `@field_validator("near")` parsing `"lat,lon"` and enforcing the `[-90, 90]` / `[-180, 180]` ranges.
+  - `@field_validator("since")` rejecting naive datetimes.
+  - `@model_validator(mode="after")` enforcing `(near is None) == (radius_km is None)`.
+  - `parsed_near` property returning `(lat, lon)` for downstream ETL use (Task 4).
+- Module-level constants `_LIMIT_DEFAULT` / `_LIMIT_MIN` / `_LIMIT_MAX` were factored out so both query models share the same bounds — minor cosmetic decision inside the planned scope.
 
-- `make check` clean.
-- No tests in this task (models are exercised by tasks 3–4).
+**Verification.** `make check` clean (isort, black, flake8, mypy, bandit, pyright). No unit tests in this task per spec; the models are exercised end-to-end by Tasks 3–4.
+
+**Notes.** A docker hiccup during local testing was unrelated to the task content; resolved by a reboot before commit.
 
 **Commit message (proposed).**
 
