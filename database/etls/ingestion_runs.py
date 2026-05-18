@@ -51,6 +51,26 @@ class IngestionRunsETL(ExtractTransformLoad):
             (inserted, updated, revisions, error, run_id),
         )
 
+    def record_skipped(self, reason: str) -> int:
+        """Atomic insert+finalise for a run that never executed (e.g. lock set).
+
+        Counts stay at zero; ``error`` carries the human-readable reason
+        so the same observability surface (Grafana, ``/admin/ingest/status``)
+        shows the skip without needing a separate column.
+        """
+        row = self._execute(
+            """
+            INSERT INTO quake.ingestion_runs (
+                started_at, finished_at, inserted_count, updated_count, revision_count, error
+            )
+            VALUES (now(), now(), 0, 0, 0, %s)
+            RETURNING id
+            """,
+            (reason,),
+            fetch="one",
+        )
+        return int(row["id"])
+
     def latest(self, limit: int) -> list[IngestionRunRow]:
         """Return the most recent ``limit`` runs, newest first."""
         rows = self._execute(

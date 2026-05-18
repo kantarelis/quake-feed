@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from database.etls.endpoint_locks import EndpointLocksETL
 from database.etls.events import EventsETL
 from database.etls.ingestion_runs import IngestionRunsETL
 from database.etls.revisions import RevisionsETL
@@ -140,3 +141,33 @@ def test_error_path_records_error_and_reraises(monkeypatch: pytest.MonkeyPatch) 
     assert runs[0].inserted_count == 0
     assert runs[0].updated_count == 0
     assert runs[0].revision_count == 0
+
+
+# ---------------------------------------------------------------------------
+# kill-switch gate (INGESTION_LOCK)
+# ---------------------------------------------------------------------------
+
+
+def test_poll_skips_when_ingestion_lock_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Lock set → record a skip-marker run, do NOT call USGS, return error envelope."""
+    EndpointLocksETL().set_lock("INGESTION_LOCK", locked_by="test", reason="testing")
+
+    fetch_calls: list[Any] = []
+
+    def _track_fetch(self: UsgsClient, feed: Any) -> dict[str, Any]:
+        fetch_calls.append(feed)
+        return {"features": []}
+
+    monkeypatch.setattr(UsgsClient, "fetch", _track_fetch)
+
+    result = poll_once()
+    assert result.inserted == 0
+    assert result.updated == 0
+    assert result.revisions == 0
+    assert result.error == "INGESTION_LOCK active"
+    assert fetch_calls == []  # USGS never contacted
+
+    runs = IngestionRunsETL().latest(1)
+    assert runs[0].error == "INGESTION_LOCK active"
+    assert runs[0].finished_at is not None
+    assert runs[0].inserted_count == 0
