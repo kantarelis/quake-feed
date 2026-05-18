@@ -47,7 +47,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 2 | `EventsETL.query()` — combined-filter SQL + unit test | `database/etls/events.py`, `tests/unit/test_events_etl.py` | ✅ |
 | 3 | Events Manager + Views scaffold + `/events/recent` route | `quake/api/events/{main,views}.py`, `quake/main.py`, `tests/unit/test_events_api_recent.py` | ✅ |
 | 4 | `GET /events` combined-filter route + unit tests | `quake/api/events/views.py`, `tests/unit/test_events_api_query.py` | ✅ |
-| 5 | `GET /metrics` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
+| 5 | `GET /metrics` endpoint | `quake/api/main/{main,views,models}.py`, `quake/api/main/__init__.py`, `tests/unit/test_main_api.py` | ✅ |
 | 6 | `GET /env` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
 | 7 | Integration smoke — end-to-end through TestClient | `tests/integration/test_read_api.py` | ⬜ |
 
@@ -160,20 +160,21 @@ validator errors surface as 422 instead of unhandled 500s.
 
 ---
 
-### Task 5 — `GET /metrics` endpoint
+### Task 5 — `GET /metrics` endpoint ✅
 
-**Scope.**
+**Outcome.**
 
-- `quake/api/main/main.py`: register `/metrics` route on `MainManager.router`.
-- `quake/api/main/views.py`: `metrics()` coroutine — returns `Response(content=prometheus_client.generate_latest(), media_type=prometheus_client.CONTENT_TYPE_LATEST)`. (Using `generate_latest` over `make_asgi_app` keeps the route mounting consistent with every other Manager endpoint — no special ASGI sub-app.)
-- `quake/api/main/models.py`: no new model (raw text response).
-- New `tests/unit/test_main_api.py`:
-  - `test_metrics_returns_prometheus_exposition` — request `/metrics`, assert `200`, content-type starts with `text/plain`, body contains `celery_task_total` (registered at import time by `functions.celery_metrics`).
+Shipped with one small additive deviation. Changes:
 
-**Acceptance.**
+- `quake/api/main/views.py`: added `metrics()` coroutine — `Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)`. No `make_asgi_app` sub-app; the route mounts uniformly with the others.
+- `quake/api/main/main.py`: registered `/metrics` with `operation_id="main_metrics"`, tag `Main`.
+- `quake/api/main/models.py`: untouched (raw text response).
+- `quake/api/main/__init__.py`: **new content** — `from functions import celery_metrics` for side-effect registration on the default Prometheus registry. Module docstring documents the reason.
+- `tests/unit/test_main_api.py` (new): `test_metrics_returns_prometheus_exposition` asserts 200, `text/plain` content-type, body contains `celery_task_total`.
 
-- `make check` clean.
-- `make test` passes.
+**Deviation.** Plan assumed `functions.celery_metrics` was "already registered". It wasn't — that module was an orphan (no importer anywhere). Without an import path the API process's registry stays empty and the planned assertion fails. Added the side-effect import in `quake/api/main/__init__.py` (per-file-ignore for F401 already covers `__init__.py` in the project flake8 config). No client-visible behavior change; just the load hook the plan was missing.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 73 unit tests (1 new for `/metrics`) + 1 integration.
 
 **Commit message (proposed).**
 
