@@ -46,7 +46,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 1 | API request/response Pydantic models | `quake/api/events/models.py` | ✅ |
 | 2 | `EventsETL.query()` — combined-filter SQL + unit test | `database/etls/events.py`, `tests/unit/test_events_etl.py` | ✅ |
 | 3 | Events Manager + Views scaffold + `/events/recent` route | `quake/api/events/{main,views}.py`, `quake/main.py`, `tests/unit/test_events_api_recent.py` | ✅ |
-| 4 | `GET /events` combined-filter route + unit tests | `quake/api/events/views.py`, `tests/unit/test_events_api_query.py` | ⬜ |
+| 4 | `GET /events` combined-filter route + unit tests | `quake/api/events/views.py`, `tests/unit/test_events_api_query.py` | ✅ |
 | 5 | `GET /metrics` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
 | 6 | `GET /env` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
 | 7 | Integration smoke — end-to-end through TestClient | `tests/integration/test_read_api.py` | ⬜ |
@@ -133,26 +133,19 @@ EventsListResponse for the most recent N events.
 
 ---
 
-### Task 4 — `GET /events` combined-filter route
+### Task 4 — `GET /events` combined-filter route ✅
 
-**Scope.**
+**Outcome.**
 
-- Add `EventsManagerViews.query(query: EventsQuery = Depends())` that calls `EventsETL().query(near=query.parsed_near, radius_km=query.radius_km, min_magnitude=query.min_magnitude, since=query.since, limit=query.limit)` and returns `EventsListResponse`.
-- Wire route in `EventsManager.run()`: `""` path, `methods=["GET"]`, `operation_id="events_query"`, tag `Events`.
-- New `tests/unit/test_events_api_query.py`:
-  - `test_query_no_filters` — returns all seeded rows.
-  - `test_query_near_and_radius` — only rows inside the circle.
-  - `test_query_min_magnitude` — only rows at/above threshold.
-  - `test_query_since` — only rows at/after timestamp.
-  - `test_query_combined` — all four filters together, narrows to one row.
-  - `test_query_partial_near_is_422` — `near=` without `radius_km=` → 422.
-  - `test_query_invalid_near_format_is_422` — `near=not-a-coord` → 422.
-  - `test_query_naive_since_is_422` — `since=2026-01-01T00:00:00` (no tz) → 422.
+Shipped with one structural deviation that the planned tests forced. Changes:
 
-**Acceptance.**
+- `quake/api/events/views.py`: added `EventsManagerViews.query(...)` that delegates to `EventsETL().query(near=query.parsed_near, ...)`. **Deviation:** the planned `query: EventsQuery = Depends()` binding produces 500s on `@field_validator` / `@model_validator` failures (they bypass FastAPI's request-validation pipeline). Switched both `recent` and `query` to `Annotated[Model, Query()]` — FastAPI's documented query-param-model pattern — so the planned 422 tests behave as specified. A short comment in the view docstring records the reasoning.
+- `quake/api/events/main.py`: registered the `""` route on the `/events` router with `operation_id="events_query"`, tag `Events`.
+- `tests/unit/test_events_api_query.py` (new): the eight planned tests — no-filter, near+radius, min_magnitude, since, all-four combined, partial-near 422, invalid-near-format 422, naive-since 422.
 
-- `make check` clean.
-- `make test` passes; OpenAPI shows both `events_recent` and `events_query`.
+**Deviation summary.** Query-binding pattern changed from `Depends()` to `Annotated[Model, Query()]`. Mechanically required by the planned 422 tests; same pattern back-applied to `recent` for consistency. No new third-party dependency, no API-shape change for clients.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 72 unit tests (8 new under `/events`) + 1 integration. `/docs` now shows both `events_recent` and `events_query` under the `Events` tag (manual check, not asserted).
 
 **Commit message (proposed).**
 
@@ -161,6 +154,8 @@ feat(api): wire GET /events with combined optional filters
 
 near=lat,lon + radius_km, min_magnitude, since, limit; all optional,
 all combinable. Validation rejects partial near input and naive datetimes.
+Switch query-param binding to Annotated[Model, Query()] so Pydantic
+validator errors surface as 422 instead of unhandled 500s.
 ```
 
 ---
