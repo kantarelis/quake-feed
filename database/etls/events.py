@@ -138,6 +138,81 @@ class EventsETL(ExtractTransformLoad):
         )
         return [EventRow.model_validate(r) for r in rows]
 
+    def query(
+        self,
+        *,
+        near: tuple[float, float] | None = None,
+        radius_km: float | None = None,
+        min_magnitude: float | None = None,
+        since: datetime | None = None,
+        limit: int = 100,
+    ) -> list[EventRow]:
+        """Return events matching every supplied filter, newest first.
+
+        All filters are optional and combinable. Each is NULL-guarded in
+        SQL via ``(%s IS NULL OR <condition>)`` so the same statement
+        serves any combination. ``near`` and ``radius_km`` must be
+        provided together — passing only one raises ``ValueError``.
+
+        The geographic filter reuses the bounding-box pre-filter +
+        inline haversine pattern from :meth:`near`; when ``near`` is
+        ``None`` the whole geo block is gated off by ``radius_km IS
+        NULL`` so the bbox/haversine columns are never evaluated.
+        """
+        if (near is None) != (radius_km is None):
+            raise ValueError("near and radius_km must be provided together")
+
+        lat: float | None = None
+        lon: float | None = None
+        lat_min: float | None = None
+        lat_max: float | None = None
+        lon_min: float | None = None
+        lon_max: float | None = None
+        if near is not None and radius_km is not None:
+            lat, lon = near
+            dlat = radius_km / 111.0
+            dlon = radius_km / (111.0 * max(math.cos(math.radians(lat)), 1e-4))
+            lat_min, lat_max = lat - dlat, lat + dlat
+            lon_min, lon_max = lon - dlon, lon + dlon
+
+        rows = self._execute(
+            """
+            SELECT *
+            FROM quake.events
+            WHERE (%s::float       IS NULL OR magnitude >= %s::float)
+              AND (%s::timestamptz IS NULL OR time      >= %s::timestamptz)
+              AND (%s::float       IS NULL OR (
+                        latitude  BETWEEN %s::float AND %s::float
+                    AND longitude BETWEEN %s::float AND %s::float
+                    AND 2 * 6371 * asin(sqrt(
+                              power(sin(radians((latitude - %s::float) / 2)), 2)
+                              + cos(radians(%s::float)) * cos(radians(latitude))
+                              * power(sin(radians((longitude - %s::float) / 2)), 2)
+                            )) <= %s::float
+                  ))
+            ORDER BY time DESC
+            LIMIT %s
+            """,
+            (
+                min_magnitude,
+                min_magnitude,
+                since,
+                since,
+                radius_km,
+                lat_min,
+                lat_max,
+                lon_min,
+                lon_max,
+                lat,
+                lat,
+                lon,
+                radius_km,
+                limit,
+            ),
+            fetch="all",
+        )
+        return [EventRow.model_validate(r) for r in rows]
+
     def near(self, lat: float, lon: float, radius_km: float) -> list[EventRow]:
         """Return events within ``radius_km`` of ``(lat, lon)``.
 
