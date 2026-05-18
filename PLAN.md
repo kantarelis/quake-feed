@@ -38,11 +38,11 @@ A separate `health_check` task pings the DB for liveness checks.
 | 1 | USGS HTTP client (`quake/ingestion/usgs/client.py`) | ✅ Done | `bb1c583` |
 | 2 | GeoJSON parser + `EventRow` mapping (`quake/ingestion/usgs/parser.py`) | ✅ Done | `c2a2326` |
 | 3 | Ingestion orchestrator (`quake/events/ingest.py`) | ✅ Done | `10296ae` |
-| 4 | Celery `poll_usgs` + Beat schedule + `health_check` (`quake/tasks.py`, `config.py`) | ⬜ Not started | — |
+| 4 | Celery `poll_usgs` + Beat schedule + `health_check` (`quake/tasks.py`, `config.py`) | ✅ Done | `027557f` |
 | 5 | Integration test (`tests/integration/test_poll_usgs.py`) | ⬜ Not started | — |
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done`
-**Next:** Task 4.
+**Next:** Task 5.
 
 ---
 
@@ -206,37 +206,52 @@ feat(ingestion): orchestrate USGS poll → upsert → ingestion-run record
 
 ---
 
-## Task 4 — Celery task + Beat schedule + health check
+## Task 4 — Celery task + Beat schedule + health check ✅
 
-**Why now.** Final wiring step — depends on the orchestrator being callable and tested.
+**Status:** Done · Commit `027557f`
 
-**Files created / modified**
-- `config.py` (modified) — Celery app already exists from Epic 1. Add a Beat schedule:
-  ```python
-  celery_app.conf.beat_schedule = {
-      "poll_usgs_every_60s": {
-          "task": "quake.tasks.poll_usgs",
-          "schedule": 60.0,
-      },
-  }
-  ```
-- `quake/tasks.py` (new):
-  - `@celery_app.task(name="quake.tasks.poll_usgs", bind=True, max_retries=0) def poll_usgs(self) -> dict:` — calls `quake.events.ingest.poll_once()`, returns `result.model_dump()`. `max_retries=0` because retries belong inside the HTTP client; Celery-level retry would double-retry.
-  - `@celery_app.task(name="quake.tasks.health_check") def health_check() -> dict:` — `with transaction() as conn: conn.execute("SELECT 1")`; returns `{"status": "ok", "ts": now_iso}`.
-- `tests/unit/test_tasks.py`:
-  - `poll_usgs` returns the expected dict — monkeypatch `UsgsClient.fetch` to the fixture, invoke `poll_usgs.apply().get()`.
-  - `health_check` returns `{"status": "ok"}` against the sandbox DB.
-  - (Beat schedule itself isn't unit-tested; it's a config dict.)
+**Shipped** — 1 new module + 1 config update + 1 test module + 1 conftest tweak
 
-**Acceptance**
-- `make check` clean.
-- New tests pass.
-- Manual smoke (documented in the test module's top docstring): `make up` then `docker compose exec backend celery -A config inspect registered` shows both tasks.
+### `config.py` (+11 / −3)
+- Added `include=["quake.tasks"]` to the `Celery(...)` constructor so the worker's `celery -A config.celery_app worker` startup imports the task module and the `@celery_app.task` decorators actually fire.
+- Replaced the empty `beat_schedule={}` with the per-60s entry: `"poll_usgs_every_60s": {"task": "quake.tasks.poll_usgs", "schedule": 60.0}`.
+
+### `quake/tasks.py` (new, 41 lines)
+- **`poll_usgs(self)`** — `@celery_app.task(name="quake.tasks.poll_usgs", bind=True, max_retries=0)`. Calls `poll_once()` and returns `result.model_dump()`. `max_retries=0` is deliberate: `UsgsClient` already retries the transport, and a Celery-level retry would double-retry *and* double-write an `ingestion_runs` row.
+- **`health_check()`** — `@celery_app.task(name="quake.tasks.health_check")`. Opens a `transaction()`, runs `SELECT 1`, returns `{"status": "ok", "ts": <iso-utc>}`.
+- Module logger: `setup_logger("tasks", "quake-feed")`.
+
+### `tests/unit/test_tasks.py` (new, 101 lines, 3 tests)
+All green; bypass the broker via `apply()` so RabbitMQ isn't required.
+
+| # | Test | Coverage |
+|---|------|----------|
+| 1 | `test_tasks_are_registered_under_expected_names` | both task names appear in `celery_app.tasks` — guards against typos in either the Beat schedule or the `docker-compose.yml` invocation |
+| 2 | `test_poll_usgs_returns_ingestion_result_dict` | monkeypatched `UsgsClient.fetch` → fixture; `celery_app.tasks["quake.tasks.poll_usgs"].apply().get()` returns the expected `{inserted, updated, revisions, error}` dict |
+| 3 | `test_health_check_returns_ok_envelope` | sandbox-DB ping returns `status == "ok"` and a tz-aware ISO timestamp |
+
+### `tests/conftest.py` (+6 lines)
+Call `_set_env_for_sandbox()` at conftest **module-load time** so pytest can collect `test_tasks.py` (whose imports transitively pull in `config.py`, which eagerly reads env vars at module load). The session fixture still calls it again — harmless because placeholders use `setdefault` and DB vars are deterministic.
+
+**Verifications**
+- `make check` — clean (all 6 linters, 0 errors).
+- `make test` — **53 passed in 4.47s** (50 existing + 3 new); no flakes.
+
+**Deviations from original plan**
+1. **`include=["quake.tasks"]` on the Celery constructor** instead of relying on autodiscovery. The plan didn't specify how Celery would learn about `quake.tasks`. With `celery -A config.celery_app worker` as the entrypoint (per `docker-compose.yml`), the module needs to be imported somewhere; `include=` is the explicit, cheaper alternative to `celery_app.autodiscover_tasks(["quake"])`.
+2. **conftest env-priming at import time.** New requirement surfaced when `test_tasks.py` couldn't be collected: importing `config.py` runs `get_environmental_variables()` at module top, but the session fixture sets env vars *after* collection. Moving the `_set_env_for_sandbox()` call to conftest module-load makes the placeholders available before pytest walks `tests/`.
+3. **Tests invoke through `celery_app.tasks[name].apply()`** rather than `poll_usgs.apply()` directly. Reason: pyright in strict mode (what pylance runs in editors) types the `@celery_app.task` decorator's return as a plain `FunctionType` because celery ships no type stubs, so `.apply()` is flagged `reportFunctionMemberAccess`. The registry lookup returns a typed `Task`, so the call resolves cleanly without `# type: ignore`. A side-effect `importlib.import_module("quake.tasks")` ensures the decorators fire in the test process.
+4. **Added a third test (`test_tasks_are_registered_under_expected_names`)** beyond the two the plan specified. The task names are referenced from both the Beat schedule (`config.py`) and the docker-compose `celery -A` command, so a silent rename is a real failure mode worth pinning.
+5. **Manual smoke documented** in the test module's top docstring as the plan suggested: `make up` + `docker compose exec backend celery -A config inspect registered` should list both tasks. Not automated — Celery's `inspect` requires a running worker connected to RabbitMQ.
+
+**Open follow-ups**
+Unchanged from prior tasks.
 
 **Proposed commit message**
 ```
 feat(ingestion): wire poll_usgs and health_check Celery tasks
 ```
+*(Actual commit used a different message: `feat(tasks): implement Celery task registry and add poll_usgs and health_check tasks`.)*
 
 ---
 
