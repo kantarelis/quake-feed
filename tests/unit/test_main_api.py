@@ -33,3 +33,19 @@ def test_metrics_returns_prometheus_exposition(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain")
     assert "celery_task_total" in response.text
+
+
+def test_env_returns_current_environment(client: TestClient) -> None:
+    """`/env` echoes ENVIRONMENT + APPLICATION_NAME + running version.
+
+    The sandbox conftest pins ``ENVIRONMENT=testing`` for the whole
+    pytest session, so the response should reflect that.
+    """
+    response = client.get("/env")
+    assert response.status_code == 200
+
+    body = response.json()
+    assert set(body.keys()) == {"environment", "application_name", "version"}
+    assert body["environment"] == "testing"
+    assert body["application_name"]
+    assert body["version"]

@@ -38,4 +38,13 @@ class MainManager:
             operation_id="main_metrics",
             tags=["Main"],
         )
+        self.router.add_api_route(
+            "/env",
+            endpoint=self.views.env,
+            methods=["GET"],
+            summary="Running environment summary",
+            description="Returns ENVIRONMENT, APPLICATION_NAME, and the running version.",
+            operation_id="main_env",
+            tags=["Main"],
+        )
         return self.router
