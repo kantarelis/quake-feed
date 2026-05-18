@@ -1,8 +1,9 @@
 """Top-level Celery application.
 
 Imported as ``from config import celery_app`` by worker and beat processes.
-Tasks register themselves on first import in Epic 3 (``quake/tasks.py``);
-the beat schedule is intentionally empty until then.
+``include=["quake.tasks"]`` ensures the task module is loaded under
+``celery -A config.celery_app worker`` so the ``@celery_app.task``
+registrations actually take effect.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ BROKER_URL = f"amqp://{_rmq.username}:{_rmq.password}@{_rmq.host}:{_rmq.amqp_por
 celery_app = Celery(
     _env.application_name,
     broker=BROKER_URL,
+    include=["quake.tasks"],
 )
 
 celery_app.conf.update(
@@ -26,5 +28,10 @@ celery_app.conf.update(
     enable_utc=True,
     task_acks_late=True,
     worker_prefetch_multiplier=1,
-    beat_schedule={},
+    beat_schedule={
+        "poll_usgs_every_60s": {
+            "task": "quake.tasks.poll_usgs",
+            "schedule": 60.0,
+        },
+    },
 )

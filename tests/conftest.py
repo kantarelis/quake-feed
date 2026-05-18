@@ -142,6 +142,12 @@ def _apply_migrations() -> None:
     )
 
 
+# Populate sandbox env vars at conftest import time so test modules whose
+# imports eagerly read env (notably ``config.py``, pulled in by
+# ``quake.tasks``) can be collected before the session fixture runs.
+_set_env_for_sandbox()
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _test_db() -> Iterator[None]:
     """Start the sandbox DB once per session, migrate it, tear it down at exit."""
