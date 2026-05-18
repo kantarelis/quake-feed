@@ -44,7 +44,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | # | Task | Files | Status |
 |---|------|-------|--------|
 | 1 | API request/response Pydantic models | `quake/api/events/models.py` | ✅ |
-| 2 | `EventsETL.query()` — combined-filter SQL + unit test | `database/etls/events.py`, `tests/unit/test_events_etl.py` | ⬜ |
+| 2 | `EventsETL.query()` — combined-filter SQL + unit test | `database/etls/events.py`, `tests/unit/test_events_etl.py` | ✅ |
 | 3 | Events Manager + Views scaffold + `/events/recent` route | `quake/api/events/{main,views}.py`, `quake/main.py`, `tests/unit/test_events_api_recent.py` | ⬜ |
 | 4 | `GET /events` combined-filter route + unit tests | `quake/api/events/views.py`, `tests/unit/test_events_api_query.py` | ⬜ |
 | 5 | `GET /metrics` endpoint | `quake/api/main/{main,views,models}.py`, `tests/unit/test_main_api.py` | ⬜ |
@@ -84,26 +84,19 @@ parses near=lat,lon, validates ranges, requires near+radius_km together.
 
 ---
 
-### Task 2 — `EventsETL.query()` combined-filter method
+### Task 2 — `EventsETL.query()` combined-filter method ✅
 
-**Scope.**
+**Outcome.**
 
-- Add `EventsETL.query(...)` to `database/etls/events.py`:
-  - Signature: `query(self, *, near: tuple[float, float] | None = None, radius_km: float | None = None, min_magnitude: float | None = None, since: datetime | None = None, limit: int = 100) -> list[EventRow]`.
-  - Single SQL statement with `(%s::float IS NULL OR <condition>)` NULL-guarded clauses for each optional filter. Reuses the bounding-box + haversine pattern already in `near()` when `near` is supplied.
-  - Returns newest-first, capped at `limit`.
-- Extend `tests/unit/test_events_etl.py`:
-  - `test_query_no_filters_returns_recent` — three seeded events, no filters → all three, newest first.
-  - `test_query_min_magnitude_only` — filters out below-threshold rows.
-  - `test_query_since_only` — filters out rows older than `since`.
-  - `test_query_near_only` — filters out rows outside the bounding-box / haversine radius.
-  - `test_query_combined` — magnitude + since + near simultaneously, single matching row.
-  - `test_query_respects_limit`.
+Shipped as planned with one small additive deviation. Changes:
 
-**Acceptance.**
+- `database/etls/events.py`: new `EventsETL.query(*, near, radius_km, min_magnitude, since, limit=100) -> list[EventRow]`. One SQL statement, `(%s::T IS NULL OR <condition>)` NULL-guard per filter. The whole geographic block (bounding-box pre-filter + inline haversine, reused from `near()`) is gated on `radius_km IS NULL`, so when `near` is omitted the bbox/haversine columns aren't evaluated at all.
+- The method raises `ValueError` if exactly one of `near`/`radius_km` is supplied — defense-in-depth beyond the `EventsQuery` model validator, since `EventsETL` is also called directly from Celery tasks/scripts.
+- `tests/unit/test_events_etl.py`: added the six planned tests (`test_query_no_filters_returns_recent`, `test_query_min_magnitude_only`, `test_query_since_only`, `test_query_near_only`, `test_query_combined`, `test_query_respects_limit`) plus one unplanned test (`test_query_partial_geo_args_raise`) covering the new `ValueError` guard.
 
-- `make check` clean.
-- `make test` (which runs unit tests against the sandbox DB) passes the new tests.
+**Deviation.** One extra test (`test_query_partial_geo_args_raise`) — a direct consequence of adding the ETL-level partial-args guard. Negligible scope creep but worth recording.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 60 unit tests (7 new under `query`) + 1 integration.
 
 **Commit message (proposed).**
 
