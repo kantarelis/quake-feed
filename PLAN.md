@@ -54,7 +54,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 
 | # | Task | Files | Status |
 |---|------|-------|--------|
-| 1 | Auth primitives — `Authenticate` dep + key hashing + Vault key layout + `docs/vault.md` | `quake/api/auth.py`, `docs/vault.md`, `tests/unit/test_auth.py`, `tests/_auth.py` | ⬜ |
+| 1 | Auth primitives — `Authenticate` dep + key hashing + Vault key layout + `docs/vault.md` | `quake/api/auth.py`, `docs/vault.md`, `tests/unit/test_auth.py`, `tests/_auth.py`, `makefile` | ✅ |
 | 2 | `make issue-api-key` + `make revoke-api-key` + scripts + unit tests | `scripts/{issue,revoke}_api_key.py`, `makefile`, `tests/unit/test_api_key_scripts.py` | ⬜ |
 | 3 | Retrofit `/events*` with `Authenticate()` (no scope) | `quake/api/events/main.py`, `tests/unit/test_events_api_recent.py`, `tests/unit/test_events_api_query.py` | ⬜ |
 | 4 | `EndpointLocksETL` + `poll_usgs` gating on `INGESTION_LOCK` | `database/etls/endpoint_locks.py`, `quake/events/ingest.py`, `tests/unit/test_endpoint_locks_etl.py`, `tests/unit/test_ingest.py` | ⬜ |
@@ -64,43 +64,35 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 
 ---
 
-### Task 1 — Auth primitives + `docs/vault.md`
+### Task 1 — Auth primitives + `docs/vault.md` ✅
 
-**Scope.**
+**Outcome.**
 
-- New `quake/api/auth.py`:
-  - `hash_key(raw: str) -> str` — SHA-256 hex digest.
-  - `generate_raw_key() -> str` — `"qkf_" + secrets.token_hex(16)`.
-  - `vault_path(key_id: int) -> str` — returns `f"api-keys/{key_id}"`.
-  - `class Authenticate:` constructor takes `*, required_scope: str | None = None`. `__call__(self, credentials: HTTPAuthorizationCredentials | None = Depends(HTTPBearer(auto_error=False))) -> ApiKeyRow`. Validates header, hashes, looks up via `ApiKeysETL().get_by_hash`, rejects on missing / revoked / scope mismatch, cross-checks raw against Vault path, calls `touch_last_seen`, returns the row.
-- New `tests/_auth.py` helper:
-  - `issue_test_key(*, scopes: list[str] = (), vault: VaultClient | StubVault) -> tuple[str, dict[str, str]]` — DB insert + Vault put + returns `(raw_key, {"Authorization": f"Bearer {raw_key}"})`. Used by every subsequent test that needs auth.
-  - Lightweight `StubVault` class that exposes `get_secret`/`put_secret`/`list_keys`/`delete_secret` against an in-process dict; matches the surface in `functions/vault.py`. `Authenticate` consumes a `VaultClient` (or `StubVault`) via a small `get_vault_client()` provider that tests can monkey-patch.
-- New `tests/unit/test_auth.py`:
-  - `test_no_header_is_401`
-  - `test_wrong_scheme_is_401`
-  - `test_unknown_key_is_401`
-  - `test_revoked_key_is_401`
-  - `test_missing_scope_is_403`
-  - `test_valid_key_returns_row_and_updates_last_seen`
-  - `test_admin_scope_passes_when_required`
-  - `test_vault_mismatch_is_401` — DB row exists but Vault holds a different raw value (e.g. partial rotation).
-- New `docs/vault.md` covering: dev-mode lifecycle, API-key path layout (`secret/api-keys/<id>`), payload shape, issuance/revoke flow, and the `Authenticate` resolution path. ~80–120 lines, includes a small ASCII diagram of the auth flow.
+Shipped as planned with two refinements (documented below). Changes:
 
-**Acceptance.**
+- `quake/api/auth.py` (new): `hash_key` (SHA-256 hex), `generate_raw_key` (`qkf_<hex32>` via `secrets.token_hex(16)`), `vault_path(key_id)` → `api-keys/<id>`, `get_vault_client()` (lru_cache singleton), `_VaultReader` Protocol, and `Authenticate` class. The `__call__` order is: header parse → DB hash lookup → revoked check → Vault raw cross-check (timing-safe via `secrets.compare_digest`) → scope check → `touch_last_seen` → return row.
+- `tests/_auth.py` (new): `StubVault` (`get_secret`/`put_secret`/`list_keys` against an in-process dict) + `issue_test_key(*, vault, scopes=None, label="test") -> (raw_key, headers)` for every downstream auth-using test.
+- `tests/unit/test_auth.py` (new): the eight planned scenarios — no header / wrong scheme / unknown / revoked / missing scope / valid+touch / admin scope passes / Vault mismatch.
+- `docs/vault.md` (new): wiring, `secret/api-keys/<id>` path layout, issuance + revoke flow (forward-references Task 2), ASCII auth-resolution diagram, operator notes.
 
-- `make check` clean.
-- `make test` passes the new auth tests.
-- No new endpoint wiring yet (that lands in tasks 3, 5, 6).
+**Refinements / deviations.**
+
+1. **`Authenticate.__call__`'s `vault` parameter typed as a `_VaultReader` Protocol**, not the concrete `VaultClient`. Tests inject a `StubVault` directly; without the Protocol, mypy rejected eight call sites. The Protocol exposes only `get_secret` since that's all `Authenticate` consumes; `VaultClient` satisfies it structurally — no behavioural change.
+2. **`StubVault` ships without `delete_secret`** even though the planned scope listed it. `functions/vault.py::VaultClient` doesn't have a delete method either, and adding both now would only be exercised in Task 2's revoke script. Deferred to Task 2 so the real and stub gain the method together (interface stays in lockstep). Recorded in the `tests/_auth.py` module docstring.
+
+**Side fix (not in original Task 1 scope).** User hit `make vault-status` → "server gave HTTP response to HTTPS client". Root cause: the `vault` CLI defaults to `VAULT_ADDR=https://127.0.0.1:8200`, but the dev-mode container serves plain HTTP. Fix in `makefile`: added a `VAULT_EXEC := docker exec -e VAULT_ADDR=http://127.0.0.1:8200 quake_vault` helper, routed `vault-status`/`vault-init`/`vault-unseal` through it; inlined the same env on `vault-seal` (which already needs an extra `-e VAULT_TOKEN=…`). Short comment block explains the why. `make vault-status` now returns the expected dev-mode envelope (`Initialized: true`, `Sealed: false`, `Storage Type: inmem`).
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 82 unit tests (8 new under `test_auth.py`) + 2 integration. Manual: `make vault-status` succeeds.
 
 **Commit message (proposed).**
 
 ```
 feat(auth): Authenticate dependency + Vault-backed API-key resolution
 
-Adds quake/api/auth.py (hash_key, generate_raw_key, Authenticate),
-docs/vault.md, and a shared tests/_auth.py helper. Endpoints opt in
-via Depends(Authenticate()) or Depends(Authenticate(required_scope=...))
+Adds quake/api/auth.py (hash_key, generate_raw_key, vault_path,
+Authenticate), docs/vault.md, and a shared tests/_auth.py helper
+(StubVault + issue_test_key). Endpoints opt in via
+Depends(Authenticate()) or Depends(Authenticate(required_scope=...))
 in later tasks.
 ```
 
