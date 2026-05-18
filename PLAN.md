@@ -58,7 +58,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 2 | `make issue-api-key` + `make revoke-api-key` + scripts + unit tests | `scripts/{issue,revoke}_api_key.py`, `makefile`, `tests/unit/test_api_key_scripts.py`, `database/etls/api_keys.py`, `functions/vault.py`, `tests/_auth.py` | ✅ |
 | 3 | Retrofit `/events*` with `Authenticate()` (no scope) | `quake/api/events/main.py`, `tests/unit/test_events_api_recent.py`, `tests/unit/test_events_api_query.py`, `tests/unit/test_main_api.py`, `tests/integration/test_read_api.py` | ✅ |
 | 4 | `EndpointLocksETL` + `poll_usgs` gating on `INGESTION_LOCK` | `database/etls/endpoint_locks.py`, `database/etls/ingestion_runs.py`, `quake/events/ingest.py`, `tests/unit/test_endpoint_locks_etl.py`, `tests/unit/test_ingest.py` | ✅ |
-| 5 | `/admin/locks` Manager + Views (admin-scoped) | `quake/api/locks/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_locks_api.py` | ⬜ |
+| 5 | `/admin/locks` Manager + Views (admin-scoped) | `quake/api/locks/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_locks_api.py` | ✅ |
 | 6 | `/admin/ingest/*` Manager + Views (admin-scoped, async trigger) | `quake/api/ingest/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_ingest_api.py` | ⬜ |
 | 7 | Integration smoke — end-to-end auth + admin surface | `tests/integration/test_auth_admin.py` | ⬜ |
 
@@ -197,34 +197,31 @@ surface for setting/clearing.
 
 ---
 
-### Task 5 — `/admin/locks` Manager + Views (admin-scoped)
+### Task 5 — `/admin/locks` Manager + Views (admin-scoped) ✅
 
-**Scope.**
+**Outcome.**
 
-- New `quake/api/locks/main.py`: `LocksManager` with `APIRouter(prefix="/admin/locks")`. `dependencies=[Depends(Authenticate(required_scope="admin"))]` applied **at the router level** so every route inherits admin scope without per-route repetition.
-- New `quake/api/locks/views.py`: `LocksManagerViews` with `list_locks()`, `set_lock(lock_name: str, body: SetLockRequest)`, `clear_lock(lock_name: str)`.
-- New `quake/api/locks/models.py`: `LockResponse` (mirror `EndpointLockRow`), `SetLockRequest(locked_by: str | None = None, reason: str | None = None)`, `LocksListResponse(count: int, locks: list[LockResponse])`.
-- `quake/main.py`: mount `LocksManager`.
-- New `tests/unit/test_locks_api.py`:
-  - `test_list_locks_admin` — admin key → 200, returns seeded `INGESTION_LOCK`.
-  - `test_set_lock_admin` — POST → 200, body returns updated row, DB confirms.
-  - `test_clear_lock_admin` — DELETE → 200, DB confirms.
-  - `test_unknown_lock_set_is_404` — POST to a name with no row → 404 (or auto-create? **proposed: 404 — locks are seeded by migration**; document choice).
-  - `test_no_key_is_401`
-  - `test_non_admin_key_is_403`
+Shipped as planned with one small additive test for symmetry. Changes:
 
-**Acceptance.**
+- `quake/api/locks/models.py` (new) — `LockResponse` (mirrors `EndpointLockRow`, `from_attributes=True`), `LocksListResponse(count, locks)`, `SetLockRequest(locked_by, reason)` (both optional).
+- `quake/api/locks/views.py` (new) — `LocksManagerViews` with `list_locks` / `set_lock(lock_name, body)` / `clear_lock(lock_name)`. Set/clear translate the ETL's `None` return into `HTTPException(404, detail="no such lock: …")`.
+- `quake/api/locks/main.py` (new) — `LocksManager` mounting `APIRouter(prefix="/admin/locks", dependencies=[Depends(Authenticate(required_scope="admin"))])`. Routes wired with `operation_id`s `admin_locks_list` / `admin_locks_set` / `admin_locks_clear`, tag `Admin`.
+- `quake/main.py` — imports `LocksManager`, constructs it, mounts its router after `EventsManager`.
+- `tests/unit/test_locks_api.py` (new) — 8 tests across three fixtures (`admin_client` / `read_client` / `no_auth_client`, all sharing the StubVault override): list / set / clear happy paths with admin key + ETL cross-check, 404 for both set and clear on unknown names, no-key 401, non-admin 403 on both list and set.
 
-- `make check` clean.
-- `make test` passes.
+**Deviation.** Plan listed `test_unknown_lock_set_is_404` but not its DELETE counterpart; added `test_unknown_lock_clear_is_404` for symmetry (same view-layer path, different verb). Trivial additive scope.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 109 unit tests (8 new under `test_locks_api.py`) + 2 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(api): /admin/locks (admin-scoped) for runtime kill switches
 
-GET lists every endpoint_locks row; POST /{name} sets locked_by/reason
-and is_locked=true; DELETE /{name} clears. Router-level admin scope.
+GET lists every endpoint_locks row; POST /{name} flips locked_by/
+reason and is_locked=true; DELETE /{name} clears all four fields.
+Unknown lock_name → 404 (locks are seeded by migration, not auto-
+created). Router-level Authenticate(required_scope="admin").
 ```
 
 ---
