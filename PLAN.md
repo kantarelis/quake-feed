@@ -57,7 +57,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 1 | Auth primitives — `Authenticate` dep + key hashing + Vault key layout + `docs/vault.md` | `quake/api/auth.py`, `docs/vault.md`, `tests/unit/test_auth.py`, `tests/_auth.py`, `makefile` | ✅ |
 | 2 | `make issue-api-key` + `make revoke-api-key` + scripts + unit tests | `scripts/{issue,revoke}_api_key.py`, `makefile`, `tests/unit/test_api_key_scripts.py`, `database/etls/api_keys.py`, `functions/vault.py`, `tests/_auth.py` | ✅ |
 | 3 | Retrofit `/events*` with `Authenticate()` (no scope) | `quake/api/events/main.py`, `tests/unit/test_events_api_recent.py`, `tests/unit/test_events_api_query.py`, `tests/unit/test_main_api.py`, `tests/integration/test_read_api.py` | ✅ |
-| 4 | `EndpointLocksETL` + `poll_usgs` gating on `INGESTION_LOCK` | `database/etls/endpoint_locks.py`, `quake/events/ingest.py`, `tests/unit/test_endpoint_locks_etl.py`, `tests/unit/test_ingest.py` | ⬜ |
+| 4 | `EndpointLocksETL` + `poll_usgs` gating on `INGESTION_LOCK` | `database/etls/endpoint_locks.py`, `database/etls/ingestion_runs.py`, `quake/events/ingest.py`, `tests/unit/test_endpoint_locks_etl.py`, `tests/unit/test_ingest.py` | ✅ |
 | 5 | `/admin/locks` Manager + Views (admin-scoped) | `quake/api/locks/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_locks_api.py` | ⬜ |
 | 6 | `/admin/ingest/*` Manager + Views (admin-scoped, async trigger) | `quake/api/ingest/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_ingest_api.py` | ⬜ |
 | 7 | Integration smoke — end-to-end auth + admin surface | `tests/integration/test_auth_admin.py` | ⬜ |
@@ -170,32 +170,29 @@ smoke gets the same StubVault override.
 
 ---
 
-### Task 4 — `EndpointLocksETL` + `poll_usgs` gating
+### Task 4 — `EndpointLocksETL` + `poll_usgs` gating ✅
 
-**Scope.**
+**Outcome.**
 
-- New `database/etls/endpoint_locks.py`:
-  - `list_all() -> list[EndpointLockRow]`
-  - `is_locked(name: str) -> bool`
-  - `set_lock(name: str, *, locked_by: str | None, reason: str | None) -> EndpointLockRow`
-  - `clear_lock(name: str) -> EndpointLockRow` — flips `is_locked=false`, clears `locked_by`/`locked_at`/`reason`.
-- `quake/events/ingest.py` (or wherever `poll_once` lives — verify): at the top, `if EndpointLocksETL().is_locked("INGESTION_LOCK"): IngestionRunsETL().record_skipped("INGESTION_LOCK active"); return IngestionRun(...skipped envelope...)`. The exact field choices documented in the design-choices section (error column carries the skip reason, counts stay zero).
-- Extend `tests/unit/test_endpoint_locks_etl.py` (new file) with the four ETL methods.
-- Extend `tests/unit/test_ingest.py` with `test_poll_skips_when_ingestion_lock_set` — seed lock, run `poll_once()`, assert: no USGS call, exactly one `ingestion_runs` row with the skip envelope.
+Shipped as planned, no behavioural deviations. Changes:
 
-**Acceptance.**
+- `database/etls/endpoint_locks.py` (new) — `EndpointLocksETL` with `list_all`, `is_locked`, `set_lock`, `clear_lock`. `set_lock` / `clear_lock` return `EndpointLockRow | None` (None on unknown name → Task 5's view layer translates to 404). `is_locked` fails open on unknown names; rationale in the module docstring (a missing row is a code bug, not operator state, and the ingestion path prefers to keep running over silently halting on a typo).
+- `database/etls/ingestion_runs.py` — added `record_skipped(reason) -> int` — atomic INSERT with `started_at=finished_at=now()`, counts at 0, `error=reason`. Returns the new id for parity with `start_run`.
+- `quake/events/ingest.py` — at the top of `poll_once`, before any `UsgsClient` construction, check `EndpointLocksETL().is_locked(_INGESTION_LOCK)`; if locked, call `runs_etl.record_skipped(_LOCK_SKIP_REASON)`, log the skip with the run id, return `IngestionResult(0, 0, 0, error=_LOCK_SKIP_REASON)`. Module-level constants `_INGESTION_LOCK = "INGESTION_LOCK"` and `_LOCK_SKIP_REASON = f"{_INGESTION_LOCK} active"` factor out the literals so Tasks 5/7 can reference the same names.
+- `tests/unit/test_endpoint_locks_etl.py` (new) — 8 tests: seeded-lock visibility, `is_locked` for seeded / unknown / set / cleared, `set_lock` on existing row, `set_lock` on unknown name → None, `clear_lock` resets fields + idempotent, `clear_lock` unknown → None, repeated `set_lock` overwrites (locked_by / reason latest-wins).
+- `tests/unit/test_ingest.py` — added `test_poll_skips_when_ingestion_lock_set`. Tracks fetch calls via a monkeypatched `UsgsClient.fetch`; asserts the call list stays empty (USGS never contacted) and the skip envelope lands in both the return value and the `ingestion_runs` row.
 
-- `make check` clean.
-- `make test` passes.
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 101 unit tests (8 new under `test_endpoint_locks_etl.py` + 1 new in `test_ingest.py`) + 2 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(ingest): EndpointLocksETL + poll_usgs gating on INGESTION_LOCK
 
-When the lock is set, poll_usgs writes a skip-marker ingestion_runs row
-and returns without touching USGS. /admin/locks (next task) is the
-operator surface for setting/clearing.
+When the lock is set, poll_once writes a skip-marker ingestion_runs
+row (via the new IngestionRunsETL.record_skipped) and returns without
+constructing a UsgsClient. /admin/locks (next task) is the operator
+surface for setting/clearing.
 ```
 
 ---
