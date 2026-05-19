@@ -49,7 +49,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 
 | # | Task | Files | Status |
 |---|------|-------|--------|
-| 1 | Alert Pydantic models — `AlertFilter` (input), `AlertFilterResponse`, `AlertEnvelope` + XOR (bbox vs center+radius) validator | `models/alerts.py`, `tests/unit/test_alerts_models.py` | ⬜ |
+| 1 | Alert Pydantic models — `AlertFilter` (input), `AlertFilterResponse`, `AlertEnvelope` + XOR (bbox vs center+radius) validator | `models/alerts.py`, `tests/unit/test_alerts_models.py` | ✅ |
 | 2 | `FilterMatcher` — pure match of an event against a filter (mag, bbox, center+radius via haversine) | `quake/alerts/matcher.py`, `tests/unit/test_filter_matcher.py` | ⬜ |
 | 3 | `SubscriberRegistry` — async per-key fanout: subscribe / unsubscribe / publish | `quake/alerts/registry.py`, `tests/unit/test_subscriber_registry.py` | ⬜ |
 | 4 | Postgres `pg_notify` trigger + `AlertListener` (lifespan-managed LISTEN task) | `database/migrations/*_events_notify.sql`, `quake/alerts/listener.py`, `quake/main.py`, `tests/unit/test_alert_listener.py` | ⬜ |
@@ -60,33 +60,41 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 
 ---
 
-### Task 1 — Alert Pydantic models
+### Task 1 — Alert Pydantic models ✅
 
-**Scope.**
+**Outcome.**
 
-- New `models/alerts.py`:
-  - `AlertFilter` — request DTO for POST/PATCH `/alerts/filters`. Fields: `min_magnitude` (float, optional, ≥0), `bbox_min_lat`/`bbox_min_lon`/`bbox_max_lat`/`bbox_max_lon` (floats, optional), `center_lat`/`center_lon`/`radius_km` (floats, optional, radius >0). `model_validator(mode="after")` enforces: at least one of (min_magnitude / bbox / center+radius) is set; the bbox group is all-or-nothing; the center+radius group is all-or-nothing; bbox XOR center+radius (cannot mix).
-  - `AlertFilterResponse` — DB row shape (mirrors `AlertFilterRow`), `from_attributes=True`. Adds `id`, `api_key_id`, `created_at`, `updated_at` on top of the input fields.
-  - `AlertEnvelope` — the SSE payload. Fields: `event_id`, `time`, `magnitude`, `magnitude_type`, `depth_km`, `latitude`, `longitude`, `place`, `url`. Pulled from `EventRow` (or the trigger JSON) at publish time.
-- New `tests/unit/test_alerts_models.py`:
-  - XOR validator: bbox-only OK, center+radius-only OK, both → `ValidationError`, partial bbox → error, partial center → error.
-  - Empty filter (no fields) → `ValidationError`.
-  - Negative `min_magnitude` / non-positive `radius_km` → `ValidationError`.
-  - `AlertEnvelope` round-trips a sample event dict.
+Shipped as planned with two minor scope additions, both pure tests on planned production code. Changes:
 
-**Acceptance.**
+- `models/alerts.py` (new) — three Pydantic models:
+  - `AlertFilter` — request DTO. Per-field range constraints via `Field(ge=…, le=…, gt=…)` cover the magnitude floor (`-1.0 ≤ min_magnitude ≤ 10.0`), bbox lat/lon ranges, center lat/lon ranges, and `radius_km > 0`. The `model_validator(mode="after")` enforces the four shape rules: partial bbox rejected, partial center+radius rejected, both shapes set at once rejected, fully-empty filter rejected. Adds a bbox-ordering check (`bbox_min_lat ≤ bbox_max_lat`, `bbox_min_lon ≤ bbox_max_lon`) once all four bbox fields are present. `extra="forbid"` rejects rogue keys.
+  - `AlertFilterResponse` — DB-row response with `from_attributes=True` so it consumes `AlertFilterRow` directly. Carries `id` / `api_key_id` / `created_at` / `updated_at` on top of the input fields.
+  - `AlertEnvelope` — SSE payload. Slim projection of `EventRow` (`event_id`, `time`, `magnitude`, `magnitude_type`, `depth_km`, `latitude`, `longitude`, `place`, `url`). Default `extra="ignore"` (no `forbid`) so the listener can feed it a `row_to_json(NEW)` dict with extra columns (`inserted_at`, `tsunami`, `status`) without crashing.
+- `tests/unit/test_alerts_models.py` (new) — 21 tests across three sections: happy-path constructions, shape errors, per-field range errors, plus the DB-row → response round-trip and the row-shaped-dict → envelope round-trip.
 
-- `make check` clean.
-- `make test` passes.
+**Deviations / additions beyond the spec.**
+
+1. **Two extra tests** beyond the plan's matrix:
+   - `test_filter_inverted_bbox_lat_is_rejected` / `test_filter_inverted_bbox_lon_is_rejected` — exercise the bbox-ordering branch that was added to the validator (mismatched min/max would otherwise create a non-empty rectangle that always evaluates false, an easy operator footgun).
+   - `test_filter_unknown_field_is_rejected` — coverage for the `extra="forbid"` config.
+2. **`AlertEnvelope` deliberately does NOT set `extra="forbid"`.** Documented inline. The pg_notify path will feed it `row_to_json(NEW)` which includes columns we don't want on the wire (`inserted_at`, `updated_at`, `tsunami`, `status`) but also don't want to reject. The test `test_envelope_consumes_row_shaped_dict` locks this in.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 138 unit tests (21 new under `test_alerts_models.py`) + 3 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(alerts): Pydantic models for filters + SSE envelope
 
-AlertFilter (request DTO with bbox/center XOR validator),
-AlertFilterResponse (DB row shape), AlertEnvelope (SSE payload).
-No DB or API surface yet — models only, exercised by unit tests.
+models/alerts.py: AlertFilter (request DTO with bbox-XOR-center+radius
+validator, magnitude / lat / lon / radius range checks, bbox ordering,
+extra=forbid), AlertFilterResponse (DB-row response, from_attributes),
+AlertEnvelope (slim SSE projection of EventRow, tolerates row_to_json
+dicts).
+
+No API or DB surface in this commit — Tasks 2-6 consume these models.
+21 unit tests cover the happy paths, every shape error, and the
+EventRow / row_to_json round-trip into AlertEnvelope.
 ```
 
 ---
