@@ -50,7 +50,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | # | Task | Files | Status |
 |---|------|-------|--------|
 | 1 | Alert Pydantic models — `AlertFilter` (input), `AlertFilterResponse`, `AlertEnvelope` + XOR (bbox vs center+radius) validator | `models/alerts.py`, `tests/unit/test_alerts_models.py` | ✅ |
-| 2 | `FilterMatcher` — pure match of an event against a filter (mag, bbox, center+radius via haversine) | `quake/alerts/matcher.py`, `tests/unit/test_filter_matcher.py` | ⬜ |
+| 2 | `FilterMatcher` — pure match of an event against a filter (mag, bbox, center+radius via haversine) | `quake/alerts/matcher.py`, `tests/unit/test_filter_matcher.py` | ✅ |
 | 3 | `SubscriberRegistry` — async per-key fanout: subscribe / unsubscribe / publish | `quake/alerts/registry.py`, `tests/unit/test_subscriber_registry.py` | ⬜ |
 | 4 | Postgres `pg_notify` trigger + `AlertListener` (lifespan-managed LISTEN task) | `database/migrations/*_events_notify.sql`, `quake/alerts/listener.py`, `quake/main.py`, `tests/unit/test_alert_listener.py` | ⬜ |
 | 5 | `/alerts/filters` Manager + Views (CRUD, per-key scoping) | `quake/api/alerts/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_alert_filters_api.py` | ⬜ |
@@ -99,27 +99,26 @@ EventRow / row_to_json round-trip into AlertEnvelope.
 
 ---
 
-### Task 2 — `FilterMatcher`
+### Task 2 — `FilterMatcher` ✅
 
-**Scope.**
+**Outcome.**
 
-- New `quake/alerts/matcher.py`:
-  - `matches(filter_row: AlertFilterRow, event: EventRow) -> bool` — pure function.
-  - Composition: every set predicate must hold (AND within a single filter): `min_magnitude` if set, bbox if set, center+radius if set.
-  - Haversine in km for the center+radius branch. Reuse the constants/formula from `EventsETL.query` if one already exists; otherwise inline a small private `_haversine_km` helper (no new deps).
-  - Module-level docstring documents: AND-within-filter, NULL columns mean "predicate not set, skip".
-- New `tests/unit/test_filter_matcher.py`:
-  - Magnitude-only: pass / fail / equal-boundary.
-  - Bbox-only: inside / outside / on-edge (inclusive boundary).
-  - Center+radius: inside / outside / antimeridian-spanning case skipped (documented as "rectangle is in lat/lon space, treat as planar near equator" — V1 limitation).
-  - Magnitude + bbox combined: passes both / fails one / fails both.
-  - All-fields filter against a sample event.
-  - Empty filter (no predicates set) → matches everything (documented — caller is expected to reject empty filters at the API layer via Task 1's validator).
+Shipped as planned with three additive test expansions (no production-code drift). Changes:
 
-**Acceptance.**
+- `quake/alerts/matcher.py` (new) — pure `matches(filter_row, event) -> bool` over the three predicates (`min_magnitude` / bbox / center+radius). Each predicate is **set** when its DB columns are non-NULL; unset predicates are skipped (`return True` for that branch). Combination is AND-within-a-filter. The haversine in `database/etls/events.py:187` is inline SQL and not reusable from Python — added a small private `_haversine_km(lat1, lon1, lat2, lon2) -> float` using `math.radians` / `math.asin` and `_EARTH_RADIUS_KM = 6371.0`.
+- `tests/unit/test_filter_matcher.py` (new) — 23 tests across the predicate matrix + combinations.
 
-- `make check` clean.
-- `make test` passes.
+**Implementation note worth recording.**
+
+`_bbox_bounds(f) -> tuple[float, float, float, float] | None` and `_center_bounds(f) -> tuple[float, float, float] | None` return narrowed tuples instead of bare booleans because pyright/mypy can't see across an `is_set` boolean check that ``f.bbox_min_lat`` is non-None when later used in a comparison. The four extra lines of indirection avoid the `# type: ignore` / `assert` patterns that the static-analysis gate forbids. Documented inline by the function signatures.
+
+**Deviations / additions beyond the spec.**
+
+1. **Bbox-edge coverage via `@pytest.mark.parametrize`.** Plan listed one "on-edge" case; expanded to all four edges plus both diagonals. The bbox-inclusive contract is what later filter changes are most likely to break.
+2. **`test_center_radius_just_outside_fails`** — exercises the "exactly outside the radius" branch separately from "way outside". The haversine boundary is more bug-prone than the inside/outside happy paths.
+3. **`test_all_predicates_set_*`** — locks in matcher behavior when an `AlertFilterRow` has bbox AND center+radius set simultaneously. The API validator rejects that combination at the boundary, but the DB row model is accommodating, so the matcher's AND semantics must hold for hand-constructed rows (seeded test data, future migration scenarios).
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 161 unit tests (23 new under `test_filter_matcher.py`) + 3 integration.
 
 **Commit message (proposed).**
 
@@ -128,7 +127,10 @@ feat(alerts): FilterMatcher — match an event against a filter row
 
 Pure function: AND across set predicates (mag / bbox / center+radius),
 haversine in km for center+radius. NULL columns mean "predicate not
-set, skip". Composition exercised by the unit-test matrix.
+set, skip". The DB row's mutually-exclusive shape (bbox vs center+
+radius) is enforced at the API layer; the matcher itself treats them
+as independent predicates that compose with AND if both happen to be
+set. Composition exercised by 23 unit tests.
 ```
 
 ---
