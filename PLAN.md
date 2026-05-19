@@ -51,7 +51,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 |---|------|-------|--------|
 | 1 | Alert Pydantic models — `AlertFilter` (input), `AlertFilterResponse`, `AlertEnvelope` + XOR (bbox vs center+radius) validator | `models/alerts.py`, `tests/unit/test_alerts_models.py` | ✅ |
 | 2 | `FilterMatcher` — pure match of an event against a filter (mag, bbox, center+radius via haversine) | `quake/alerts/matcher.py`, `tests/unit/test_filter_matcher.py` | ✅ |
-| 3 | `SubscriberRegistry` — async per-key fanout: subscribe / unsubscribe / publish | `quake/alerts/registry.py`, `tests/unit/test_subscriber_registry.py` | ⬜ |
+| 3 | `SubscriberRegistry` — async per-key fanout: subscribe / unsubscribe / publish | `quake/alerts/registry.py`, `tests/unit/test_subscriber_registry.py` | ✅ |
 | 4 | Postgres `pg_notify` trigger + `AlertListener` (lifespan-managed LISTEN task) | `database/migrations/*_events_notify.sql`, `quake/alerts/listener.py`, `quake/main.py`, `tests/unit/test_alert_listener.py` | ⬜ |
 | 5 | `/alerts/filters` Manager + Views (CRUD, per-key scoping) | `quake/api/alerts/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_alert_filters_api.py` | ⬜ |
 | 6 | `/alerts/stream` SSE Manager + view; pin `sse-starlette` in `requirements.txt` | `quake/api/alerts/{main,views}.py`, `requirements.txt`, `tests/unit/test_alerts_stream_api.py` | ⬜ |
@@ -135,43 +135,53 @@ set. Composition exercised by 23 unit tests.
 
 ---
 
-### Task 3 — `SubscriberRegistry`
+### Task 3 — `SubscriberRegistry` ✅
 
-**Scope.**
+**Outcome.**
 
-- New `quake/alerts/registry.py`:
-  - `Subscriber` dataclass — `id: int`, `api_key_id: int`, `filters: list[AlertFilterRow]`, `queue: asyncio.Queue[AlertEnvelope]`.
-  - `SubscriberRegistry` class:
-    - `subscribe(api_key_id, filters) -> Subscriber` — assigns an id, allocates a bounded queue (default `maxsize=100`), stores under `_subs[id]`.
-    - `unsubscribe(sub_id)` — pops the slot; idempotent on unknown id.
-    - `publish(event)` — synchronously walk `_subs`, run `FilterMatcher.matches` against each subscriber's filters (OR across them — see design choice 3), and `queue.put_nowait` the envelope into each match. On `QueueFull`, drop the envelope for that slow subscriber and log a warning with the `(sub_id, api_key_id)` pair (back-pressure choice: live alerts beat dead alerts for everyone else).
-    - `get_subscriber_count() -> int` — small accessor for observability / tests.
-  - Module-level `_REGISTRY` singleton + `get_registry()` accessor; tests reset via a fixture that overwrites the singleton.
-- New `tests/unit/test_subscriber_registry.py`:
-  - `subscribe` returns distinct ids + an awaitable queue.
-  - `publish` routes to matching subscribers (uses real `FilterMatcher`, real `AlertFilterRow`).
-  - `publish` skips non-matching subscribers.
-  - `publish` ORs across multiple filters for one subscriber.
-  - `publish` on a full queue drops the envelope for that slot and keeps going.
-  - `unsubscribe` removes the slot; subsequent publishes don't deliver to it.
-  - Unknown `unsubscribe` is a no-op.
-  - Empty registry: `publish` is a no-op (no error).
+Shipped as planned with one signature choice worth recording and four additive tests. Changes:
 
-**Acceptance.**
+- `quake/alerts/registry.py` (new):
+  - `Subscriber` — `@dataclass` with `id`, `api_key_id`, `filters: list[AlertFilterRow]`, `queue: asyncio.Queue[AlertEnvelope]` (the queue's `field(repr=False)` keeps log lines readable).
+  - `SubscriberRegistry`:
+    - `subscribe(api_key_id, filters) -> Subscriber` — `itertools.count` for ids, bounded queue via `asyncio.Queue(maxsize=…)`, default `maxsize=100`, override via constructor arg for tests.
+    - `unsubscribe(sub_id)` — `dict.pop(…, None)`, logs only when a slot was actually removed.
+    - `publish(event: EventRow)` — iterates `_subs.values()`, skips empty filter lists, runs `any(matches(f, event) for f in sub.filters)` for the OR-across semantics, lazily constructs the `AlertEnvelope` once on the first match, `put_nowait` into each match. `asyncio.QueueFull` catches and warns with `(sub_id, api_key_id, event_id)`.
+    - `get_subscriber_count()` for tests + observability.
+  - Module-level `_REGISTRY: SubscriberRegistry | None`, `get_registry()` lazy init, plus `reset_registry_for_tests()` exposed alongside (the test hook ships in the production module so tests don't need to reach into a `_REGISTRY` private name).
+- `tests/unit/test_subscriber_registry.py` (new) — 14 async tests covering lifecycle, routing, OR semantics, back-pressure (a `maxsize=1` registry with a slot pre-filled by hand → publish drops for that slot but delivers to a fast neighbour), and the singleton accessor.
 
-- `make check` clean.
-- `make test` passes.
+**Implementation notes worth recording.**
+
+1. **`publish(event: EventRow)` — not `publish(envelope)`.** Takes the `EventRow` so the matcher (Task 2) receives its declared input type with no cast or `# type: ignore`. The registry builds `AlertEnvelope.model_validate(event)` **lazily** — zero allocation if nothing matches.
+2. **Empty filter list short-circuits before the matcher.** A subscriber with `filters=[]` is unreachable by `publish` even though Task 2's matcher would route every event to an empty filter ("vacuously true"). Defence-in-depth against an empty-filters subscription accidentally subscribing to the firehose; the API layer (Task 6) will reject `subscribe` with no filters too, but this layer doesn't trust callers either.
+3. **Singleton + test hook live in the production module.** Alternative was a `tests/_alerts.py` helper reaching into `_REGISTRY`. Keeping `reset_registry_for_tests()` next to the singleton means callers don't need to know the private name, and pyright sees the symbol.
+
+**Deviations / additions beyond the spec.**
+
+1. **Four extra tests** beyond the plan's matrix:
+   - `test_publish_delivers_exactly_once_when_multiple_filters_all_match` — locks in the `any(...)` short-circuit (two filters both match → queue holds exactly one envelope, not two).
+   - `test_publish_skips_subscriber_with_empty_filter_list` — covers the empty-filter-list guard described above.
+   - `test_publish_routes_to_multiple_matching_subscribers` — multi-subscriber fanout invariant.
+   - `test_get_registry_returns_same_instance` / `test_reset_registry_for_tests_rebuilds_the_singleton` — locks in the singleton + test-hook contract.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 175 unit tests (14 new under `test_subscriber_registry.py`) + 3 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(alerts): SubscriberRegistry — async per-key fanout bus
 
-In-process pub/sub: each subscriber owns a bounded asyncio.Queue and
-a snapshot of their filters. publish() runs FilterMatcher against
-every active slot and routes matching envelopes; full queues drop
-the envelope for that slot. Module-level singleton with reset hooks
-for tests.
+In-process pub/sub. Each Subscriber owns a bounded asyncio.Queue
+(maxsize=100) and a snapshot of their filters taken at subscribe
+time. publish(EventRow) walks every slot, ORs across the snapshot
+via FilterMatcher, and put_nowait's an AlertEnvelope into matching
+queues. Full queues drop the envelope for that slot and log; live
+alerts beat dead alerts.
+
+Module-level singleton with a reset hook so tests don't fight
+production state. Empty filter lists short-circuit before the
+matcher to keep the empty-snapshot path away from the firehose.
 ```
 
 ---
