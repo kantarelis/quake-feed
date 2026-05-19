@@ -1,10 +1,17 @@
-"""Manager for the ``/alerts/filters`` endpoint group.
+"""Managers for the ``/alerts/*`` endpoint groups.
 
-Per-API-key CRUD on persistent alert filters. Auth is declared at the
-view-signature level (not the router level) because each view needs
-the resolved :class:`ApiKeyRow` to scope its ETL calls; a single
-view-level ``Depends(Authenticate())`` per route is enough — see
-``views.py`` for the rationale.
+Two routers ship here:
+
+* :class:`AlertFiltersManager` — per-API-key CRUD on persistent alert
+  filters under ``/alerts/filters``.
+* :class:`AlertsStreamManager` — SSE under ``/alerts/stream``. The
+  stream gets its own Manager so OpenAPI groups it cleanly in the
+  ``Alerts`` tag without inheriting the CRUD operation summaries.
+
+Auth is declared at the view-signature level (not the router level)
+because each view needs the resolved :class:`ApiKeyRow` to scope its
+work; a single view-level ``Depends(Authenticate())`` per route is
+enough — see ``views.py`` for the rationale.
 """
 
 from __future__ import annotations
@@ -13,7 +20,7 @@ import logging
 
 from fastapi import APIRouter, status
 
-from quake.api.alerts.views import AlertFiltersManagerViews
+from quake.api.alerts.views import AlertFiltersManagerViews, AlertsStreamManagerViews
 
 
 class AlertFiltersManager:
@@ -66,6 +73,30 @@ class AlertFiltersManager:
             description="Remove a filter owned by the authenticated key. Unknown ids return 404.",
             operation_id="alerts_filters_delete",
             status_code=status.HTTP_204_NO_CONTENT,
+            tags=["Alerts"],
+        )
+        return self.router
+
+
+class AlertsStreamManager:
+    def __init__(self, logger: logging.Logger | None = None) -> None:
+        self.logger = logger if logger else logging.getLogger("AlertsStreamManager")
+        self.router = APIRouter(prefix="/alerts")
+        self.views = AlertsStreamManagerViews(logger=self.logger)
+
+    def run(self) -> APIRouter:
+        self.router.add_api_route(
+            "/stream",
+            endpoint=self.views.stream,
+            methods=["GET"],
+            summary="Server-Sent-Events stream of matching events",
+            description=(
+                "Open a long-lived SSE connection. Filters configured on the authenticated key "
+                "via /alerts/filters are snapshotted at connect time; matched events arrive as "
+                "`event: alert` frames with the AlertEnvelope JSON. Returns 400 if no filters "
+                "are configured (so the stream isn't opened for a key that can't receive anything)."
+            ),
+            operation_id="alerts_stream",
             tags=["Alerts"],
         )
         return self.router

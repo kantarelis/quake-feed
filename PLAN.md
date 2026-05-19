@@ -54,7 +54,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 3 | `SubscriberRegistry` — async per-key fanout: subscribe / unsubscribe / publish | `quake/alerts/registry.py`, `tests/unit/test_subscriber_registry.py` | ✅ |
 | 4 | Postgres `pg_notify` trigger + `AlertListener` (lifespan-managed LISTEN task) | `database/migrations/*_events_notify.sql`, `quake/alerts/listener.py`, `quake/main.py`, `tests/unit/test_alert_listener.py` | ✅ |
 | 5 | `/alerts/filters` Manager + Views (CRUD, per-key scoping) | `quake/api/alerts/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_alert_filters_api.py` | ✅ |
-| 6 | `/alerts/stream` SSE Manager + view; pin `sse-starlette` in `requirements.txt` | `quake/api/alerts/{main,views}.py`, `requirements.txt`, `tests/unit/test_alerts_stream_api.py` | ⬜ |
+| 6 | `/alerts/stream` SSE Manager + view; pin `sse-starlette` in `requirements.txt` | `quake/api/alerts/{main,views}.py`, `requirements.txt`, `tests/unit/test_alerts_stream_api.py` | ✅ |
 | 7 | `docs/alerts.md` — design note (LISTEN/NOTIFY hop, in-process matcher, filter semantics, single-pod limit) | `docs/alerts.md` | ⬜ |
 | 8 | Integration smoke — end-to-end SSE | `tests/integration/test_alerts_stream.py` | ⬜ |
 
@@ -288,43 +288,60 @@ foreign row, and 401 on every verb without auth.
 
 ---
 
-### Task 6 — `/alerts/stream` SSE
+### Task 6 — `/alerts/stream` SSE ✅
 
-**Scope.**
+**Outcome.**
 
-- `requirements.txt` — uncomment + pin `sse-starlette` (latest 2.x compatible with Python 3.14 + FastAPI 0.136).
-- `quake/api/alerts/main.py` — add a second router `AlertsStreamManager` with `APIRouter(prefix="/alerts", dependencies=[Depends(Authenticate())])`.
-- `quake/api/alerts/views.py` — `AlertsStreamManagerViews.stream(request, current_key)`:
-  - Load `AlertFiltersETL().for_api_key(current_key.id)`.
-  - If empty, raise `HTTPException(400, "no filters configured — POST one to /alerts/filters first")` so the client doesn't open a stream that can never deliver anything.
-  - `subscriber = registry.subscribe(current_key.id, filters)`.
-  - Inner async generator: loop reading from `subscriber.queue`, yield `{"event": "alert", "data": envelope.model_dump_json()}`. Bail on `await request.is_disconnected()` periodically (sse-starlette wraps this).
-  - `finally: registry.unsubscribe(subscriber.id)`.
-  - Return `EventSourceResponse(generator, send_timeout=15.0, ping=15)`.
-- `quake/main.py` — mount `AlertsStreamManager`.
-- New `tests/unit/test_alerts_stream_api.py`:
-  - Subscribe via `TestClient.stream("GET", "/alerts/stream", headers=…)` and read N events.
-  - **Publish round-trip** — seed a filter, open the stream, push one envelope via `registry.publish` directly, assert the client reads `event: alert\ndata: {…}`.
-  - **Filter mismatch is dropped** — second publish with a non-matching envelope is not delivered.
-  - **No filters → 400** before the stream opens.
-  - **No auth → 401**.
-  - **Disconnect cleans up** — close the stream, allow one event loop tick, assert `registry.get_subscriber_count()` is back to its pre-test value.
+Shipped as planned with five deliberate test-infrastructure deviations (documented below) and one production-shape refinement that strengthens the registry-slot lifecycle. Changes:
 
-**Acceptance.**
+- `requirements.txt` — pinned `sse-starlette==3.4.4` (the 2.x reference in the original comment was stale; 3.x is the current line).
+- `quake/api/alerts/views.py` — added `AlertsStreamManagerViews` with `stream(request, current_key=…)`. Loads filters for the current key, raises `HTTPException(400)` if empty, otherwise returns an `EventSourceResponse` wrapping an inner async generator. **Subscribe + unsubscribe both live inside the generator's `try/finally`**, so the registry slot's lifecycle is owned by the iterator — a generator closed before any frames are yielded still gets cleaned up via the `finally`.
+- `quake/api/alerts/main.py` — added a second Manager `AlertsStreamManager` at `prefix="/alerts"` mounting one route `GET /alerts/stream` under `tags=["Alerts"]`, `operation_id="alerts_stream"`. Kept separate from `AlertFiltersManager` for clean OpenAPI grouping (CRUD vs. SSE).
+- `quake/main.py` — mounts `AlertsStreamManager` after `AlertFiltersManager`.
+- `tests/unit/test_alerts_stream_api.py` (new) — 6 tests, every individual test call ≤ 0.1s.
 
-- `make check` clean.
-- `make test` passes.
+**Test-infrastructure deviations (deliberate, recorded so future SSE work can re-use the pattern).**
+
+1. **Pre-stream gates use `httpx.AsyncClient` + `ASGITransport`, not Starlette's sync `TestClient`.** Sync `TestClient` runs the ASGI app in a portal thread; the SSE registry uses `asyncio.Queue` whose `put_nowait` wakeup is loop-bound and not thread-safe. Sharing one event loop between test and app sidesteps the cross-thread queue hazard entirely.
+2. **Live-streaming tests bypass HTTP entirely** — they call `views.stream(...)` directly, take ownership of `response.body_iterator`, and assert on the raw `{"event": "alert", "data": <json>}` dicts the generator yields. The first iteration of these tests went through `TestClient.stream` / `aiter_lines` and hung past 60s waiting for buffered flushes. The view-direct path is sub-second per test and immune to flush timing.
+3. **Generator startup uses `asyncio.create_task(body_iter.__anext__()) + await asyncio.sleep(0)`**, not `asyncio.wait_for(anext, timeout=…)`. Cancelling the anext via `wait_for` timeout fires the generator's `finally` and unsubscribes the slot — the assertion under test no longer holds. The `create_task + sleep(0)` pattern lets the generator reach its first true async wait (`queue.get`) with the subscriber slot registered, without disturbing it.
+4. **Disconnect-cleanup test cancels the in-flight anext task, doesn't call `aclose()`.** Calling `aclose()` while `__anext__()` is awaiting the same generator raises `RuntimeError: aclose(): asynchronous generator is already running`. Cancelling the task propagates `CancelledError` through the generator and into its `finally` — same teardown path, no conflict. The cancellation is a clean stand-in for an SSE client dropping the connection.
+5. **`_drain` helper splits the multi-exception catch into two sequential `except` clauses.** `except (asyncio.CancelledError, StopAsyncIteration):` got reformatted by Black 26 to `except asyncio.CancelledError, StopAsyncIteration:` — valid Python 3.14 grammar (right-hand side is a tuple expression) but visually misleading; two separate `except` clauses sidestep the formatting fight without `# fmt: off` (forbidden by the static-analysis gate).
+
+**Production-shape refinement.**
+
+6. **Subscribe moved inside the generator** (originally written outside, in the view body, then refactored). The inside-generator design correctly pairs the registry slot's lifecycle with the iterator's: if the generator is closed before any frames have been yielded — including the case of a client that disconnects mid-handshake — the slot still gets torn down by the `finally`. Outside-the-generator subscribe would leak in that race. Documented inline.
+
+**Other deviation.**
+
+7. **`AlertsStreamManager` is a separate class from `AlertFiltersManager`.** Plan implied one manager with two routers; splitting groups OpenAPI by surface area (CRUD vs. SSE) and lets the SSE manager pick its own prefix (`/alerts` vs `/alerts/filters`) cleanly. ~25 extra lines, no behavioural change.
+
+**Cross-cutting note recorded in memory.** Triggered the creation of `feedback_unit_test_speed.md` — every unit test in this repo must complete in under 2 seconds. The first iteration of these SSE tests violated that hard cap by hanging on `TestClient.stream` flush; the rewrite to view-direct + AsyncClient brought every test call to ≤ 0.1s.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 200 unit tests (6 new under `test_alerts_stream_api.py`, every individual call ≤ 0.1s) + 3 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(api): /alerts/stream — per-key SSE of matching events
 
-EventSourceResponse with a generator backed by SubscriberRegistry.
-On connect: snapshot this key's filters, subscribe. Each new event
-matched against the snapshot is emitted as `event: alert` with the
-AlertEnvelope JSON. Disconnect cleanly unsubscribes the slot.
-Mid-stream filter edits require a reconnect to take effect.
+EventSourceResponse-backed view at GET /alerts/stream, mounted by
+a new AlertsStreamManager. Filters are snapshotted at connect time
+via AlertFiltersETL.for_api_key; the inner generator subscribes to
+SubscriberRegistry, yields {"event": "alert", "data": <json>} per
+matched envelope, and unsubscribes on close. Empty filter set → 400
+so we don't open a stream that can't deliver. sse-starlette pinned
+to 3.4.4 (ping=15s, send_timeout=15s).
+
+Subscribe and unsubscribe both live inside the generator so the
+registry slot is owned by the iterator's lifecycle — no leak if
+the generator is closed before any frames have been yielded.
+
+6 unit tests via two patterns: pre-stream gates (401, 400) go
+through httpx.AsyncClient + ASGITransport; the live publish /
+filter-match / lifecycle tests drive the view's body_iterator
+directly to avoid the cross-thread asyncio.Queue hazard that
+sync TestClient introduces. Every test call ≤ 0.1s.
 ```
 
 ---

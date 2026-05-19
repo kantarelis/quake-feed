@@ -4,7 +4,7 @@
 # --- Web framework ---
 fastapi==0.136.1
 uvicorn[standard]==0.47.0
-# sse-starlette>=2.1.0
+sse-starlette==3.4.4
 
 # --- Validation / settings ---
 pydantic==2.13.4
