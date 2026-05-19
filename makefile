@@ -162,14 +162,20 @@ reset: full-clean build up ## Nuke everything, rebuild the image, bring the stac
 # `vault server -dev` auto-initializes/unseals, so init/unseal/seal are no-ops
 # in the current compose setup. The targets exist so the operator interface
 # stays stable when/if Vault flips to production mode.
+#
+# VAULT_EXEC pins VAULT_ADDR to the in-container HTTP listener; without it
+# the CLI defaults to https://127.0.0.1:8200 and fails against the dev-mode
+# server with "server gave HTTP response to HTTPS client".
 # ===========================================================================
+
+VAULT_EXEC := $(DOCKER) exec -e VAULT_ADDR=http://127.0.0.1:8200 quake_vault
 
 .PHONY: vault-status vault-init vault-unseal vault-seal
 vault-status: ## Show seal/init status of the running Vault container
-	@$(DOCKER) exec quake_vault vault status || true
+	@$(VAULT_EXEC) vault status || true
 
 vault-init: ## Initialize Vault; writes keys to vault_init_output.txt (gitignored)
-	@$(DOCKER) exec quake_vault vault operator init -key-shares=5 -key-threshold=3 > vault_init_output.txt
+	@$(VAULT_EXEC) vault operator init -key-shares=5 -key-threshold=3 > vault_init_output.txt
 	@echo "Init output saved to vault_init_output.txt. Update .env with the unseal keys + root token."
 
 vault-unseal: ## Unseal Vault using VAULT_UNSEAL_KEYS from .env
@@ -178,12 +184,28 @@ vault-unseal: ## Unseal Vault using VAULT_UNSEAL_KEYS from .env
 		echo "VAULT_UNSEAL_KEYS empty in .env; run 'make vault-init' first."; exit 1; \
 	fi; \
 	IFS=','; for k in $$VAULT_UNSEAL_KEYS; do \
-		$(DOCKER) exec quake_vault vault operator unseal "$$k"; \
+		$(VAULT_EXEC) vault operator unseal "$$k"; \
 	done
 
 vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 	@set -a; . ./.env; set +a; \
-	$(DOCKER) exec -e VAULT_TOKEN="$$VAULT_TOKEN" quake_vault vault operator seal
+	$(DOCKER) exec -e VAULT_ADDR=http://127.0.0.1:8200 -e VAULT_TOKEN="$$VAULT_TOKEN" quake_vault vault operator seal
+
+# ===========================================================================
+# API-key issuance / revocation
+# Both scripts talk to the running compose stack (Vault on $VAULT_PORT, DB
+# on $DB_PORT). Issuance prints the raw key on stdout exactly once.
+# ===========================================================================
+
+.PHONY: issue-api-key revoke-api-key
+issue-api-key: ## Issue a new API key. Args: LABEL=<tag>, SCOPES=<comma>
+	@set -a; . ./.env; set +a; \
+	$(PY) scripts/issue_api_key.py $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
+
+revoke-api-key: ## Revoke an API key by id. Args: KEY_ID=<id>
+	@if [ -z "$(KEY_ID)" ]; then echo "Usage: make revoke-api-key KEY_ID=<id>"; exit 1; fi
+	@set -a; . ./.env; set +a; \
+	$(PY) scripts/revoke_api_key.py --key-id $(KEY_ID)
 
 # ===========================================================================
 # Database migrations (dbmate)
@@ -233,17 +255,6 @@ db-schema: ## Dump local schema to database/schema.sql (gitignored) and prettify
 	DATABASE_URL="postgres://$$DB_USERNAME:$$DB_PASSWORD@127.0.0.1:$$DB_PORT/$$DB_NAME?sslmode=disable" \
 	$(DBMATE) $(DBMATE_FLAGS) dump
 	$(PY) -m database._pretty_schema
-
-# ===========================================================================
-# API keys (Epic 5 placeholders)
-# ===========================================================================
-
-.PHONY: issue-api-key revoke-api-key
-issue-api-key: ## (stub) Mint a new API key into Vault
-	@echo "not yet implemented (Epic 5)"
-
-revoke-api-key: ## (stub) Revoke an existing API key
-	@echo "not yet implemented (Epic 5)"
 
 # ===========================================================================
 # Frontend (Epic 7 placeholders)

@@ -29,17 +29,22 @@ from fastapi.testclient import TestClient
 from database.etls.events import EventsETL
 from database.main import transaction
 from database.models import EventRow
+from quake.api.auth import get_vault_client
 from quake.main import Quake
+from tests._auth import StubVault, issue_test_key
 
 pytestmark = pytest.mark.integration
 
 # Truncate set mirrors the unit conftest's, minus seeded fixtures the
-# integration DB doesn't pre-populate.
+# integration DB doesn't pre-populate. ``api_keys`` is included so the
+# auth header we issue here can't collide with rows left by a previous
+# integration test in the same session.
 _TRUNCATE_SQL = """
     TRUNCATE
         quake.events,
         quake.event_revisions,
-        quake.ingestion_runs
+        quake.ingestion_runs,
+        quake.api_keys
     RESTART IDENTITY CASCADE
 """
 
@@ -82,11 +87,32 @@ def clean_events() -> Iterator[None]:
 
 
 @pytest.fixture
-def client() -> TestClient:
-    return TestClient(Quake(logger=logging.getLogger("test-read-api-integration")).app)
+def client(clean_events: None) -> TestClient:
+    """TestClient pre-loaded with an issued API key.
+
+    Depends on ``clean_events`` so the TRUNCATE runs **before** we
+    issue the key — otherwise the truncate wipes the row we just
+    inserted and ``Authenticate`` returns 401 for every request.
+
+    Vault is overridden with a :class:`StubVault` to keep this test
+    free of the live Vault container (matching the existing
+    integration tests). Auth itself is a real path: the DB row is
+    inserted, the StubVault holds the raw key, and
+    :class:`quake.api.auth.Authenticate` resolves them on every
+    protected request.
+    """
+    vault = StubVault()
+    quake = Quake(logger=logging.getLogger("test-read-api-integration"))
+    quake.app.dependency_overrides[get_vault_client] = lambda: vault
+    _, headers = issue_test_key(vault=vault)
+    c = TestClient(quake.app)
+    c.headers.update(headers)
+    return c
 
 
-def test_read_api_end_to_end(client: TestClient, clean_events: None) -> None:
+def test_read_api_end_to_end(client: TestClient) -> None:
+    # ``client`` already pulls in ``clean_events`` transitively, so the DB is
+    # truncated and re-seeded with the issued API key before we hit the app.
     """One pass covering every endpoint shipped in Epic 4."""
     # Seed three events that exercise both filters:
     #   seed_a — nearby (37.0, 23.0), magnitude below 5.0

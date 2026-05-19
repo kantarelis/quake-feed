@@ -59,6 +59,22 @@ class VaultClient:
         keys = resp.get("data", {}).get("keys", [])
         return [str(k) for k in keys]
 
+    def delete_secret(self, path: str) -> None:
+        """Destroy a KV-v2 path and all of its versions.
+
+        Idempotent: a missing path is treated as a no-op. Uses
+        ``delete_metadata_and_all_versions`` so the raw value is
+        unrecoverable even from version history (Vault's soft-delete
+        keeps versions around by default).
+        """
+        try:
+            self._client.secrets.kv.v2.delete_metadata_and_all_versions(
+                path=path,
+                mount_point=self.KV_MOUNT,
+            )
+        except InvalidPath:
+            return
+
 
 def init_vault(logger: logging.Logger) -> VaultClient:
     """Construct a VaultClient and warn loudly if the server is not ready.

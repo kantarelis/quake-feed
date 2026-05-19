@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel
 
+from database.etls.endpoint_locks import EndpointLocksETL
 from database.etls.events import EventsETL
 from database.etls.ingestion_runs import IngestionRunsETL
 from database.etls.revisions import RevisionsETL
@@ -21,6 +22,9 @@ from quake.ingestion.usgs.client import UsgsClient, UsgsFeed
 from quake.ingestion.usgs.parser import parse_feed
 
 logger = setup_logger("ingest", "quake-feed")
+
+_INGESTION_LOCK = "INGESTION_LOCK"
+_LOCK_SKIP_REASON = f"{_INGESTION_LOCK} active"
 
 
 class IngestionResult(BaseModel):
@@ -53,6 +57,15 @@ def poll_once(
     unchanged so the caller's failure handling still sees it.
     """
     runs_etl = IngestionRunsETL()
+
+    # Kill-switch gate (Epic 5 — Task 4). When the operator has set
+    # INGESTION_LOCK via /admin/locks, record the skip and bail before
+    # opening a UsgsClient or hitting USGS.
+    if EndpointLocksETL().is_locked(_INGESTION_LOCK):
+        run_id = runs_etl.record_skipped(_LOCK_SKIP_REASON)
+        logger.info("poll_once skipped: lock active", extra={"run_id": run_id, "lock": _INGESTION_LOCK})
+        return IngestionResult(inserted=0, updated=0, revisions=0, error=_LOCK_SKIP_REASON)
+
     run_started = datetime.now(timezone.utc)
     run_id = runs_etl.start_run()
 

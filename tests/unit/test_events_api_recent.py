@@ -5,6 +5,12 @@ is exercised end-to-end through FastAPI's dependency-resolution machinery
 (query-param parsing, ``RecentEventsQuery`` validation, the ``EventsETL``
 call, response serialization). The sandbox DB conftest seeds an empty
 ``quake.events`` before each test.
+
+Every ``/events*`` route requires a valid API key (Epic 5 — Task 3);
+the ``client`` fixture issues one against the sandbox DB + a
+:class:`StubVault` and pre-loads the ``Authorization`` header so the
+existing assertions need no further change. ``no_auth_client`` is the
+header-less variant used by the 401 cases.
 """
 
 from __future__ import annotations
@@ -17,7 +23,9 @@ from fastapi.testclient import TestClient
 
 from database.etls.events import EventsETL
 from database.models import EventRow
+from quake.api.auth import get_vault_client
 from quake.main import Quake
+from tests._auth import StubVault, issue_test_key
 
 
 def _event(
@@ -47,7 +55,21 @@ def _event(
 
 @pytest.fixture
 def client() -> TestClient:
+    vault = StubVault()
     quake = Quake(logger=logging.getLogger("test-events-api"))
+    quake.app.dependency_overrides[get_vault_client] = lambda: vault
+    _, headers = issue_test_key(vault=vault)
+    c = TestClient(quake.app)
+    c.headers.update(headers)
+    return c
+
+
+@pytest.fixture
+def no_auth_client() -> TestClient:
+    """TestClient with no Authorization header — for the 401 cases."""
+    vault = StubVault()
+    quake = Quake(logger=logging.getLogger("test-events-api-noauth"))
+    quake.app.dependency_overrides[get_vault_client] = lambda: vault
     return TestClient(quake.app)
 
 
@@ -92,3 +114,16 @@ def test_recent_empty(client: TestClient) -> None:
     response = client.get("/events/recent")
     assert response.status_code == 200
     assert response.json() == {"count": 0, "events": []}
+
+
+def test_recent_requires_auth(no_auth_client: TestClient) -> None:
+    response = no_auth_client.get("/events/recent")
+    assert response.status_code == 401
+
+
+def test_recent_rejects_bad_key(no_auth_client: TestClient) -> None:
+    response = no_auth_client.get(
+        "/events/recent",
+        headers={"Authorization": "Bearer qkf_deadbeef00000000000000000000beef"},
+    )
+    assert response.status_code == 401
