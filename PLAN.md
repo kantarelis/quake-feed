@@ -52,7 +52,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 1 | Alert Pydantic models — `AlertFilter` (input), `AlertFilterResponse`, `AlertEnvelope` + XOR (bbox vs center+radius) validator | `models/alerts.py`, `tests/unit/test_alerts_models.py` | ✅ |
 | 2 | `FilterMatcher` — pure match of an event against a filter (mag, bbox, center+radius via haversine) | `quake/alerts/matcher.py`, `tests/unit/test_filter_matcher.py` | ✅ |
 | 3 | `SubscriberRegistry` — async per-key fanout: subscribe / unsubscribe / publish | `quake/alerts/registry.py`, `tests/unit/test_subscriber_registry.py` | ✅ |
-| 4 | Postgres `pg_notify` trigger + `AlertListener` (lifespan-managed LISTEN task) | `database/migrations/*_events_notify.sql`, `quake/alerts/listener.py`, `quake/main.py`, `tests/unit/test_alert_listener.py` | ⬜ |
+| 4 | Postgres `pg_notify` trigger + `AlertListener` (lifespan-managed LISTEN task) | `database/migrations/*_events_notify.sql`, `quake/alerts/listener.py`, `quake/main.py`, `tests/unit/test_alert_listener.py` | ✅ |
 | 5 | `/alerts/filters` Manager + Views (CRUD, per-key scoping) | `quake/api/alerts/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_alert_filters_api.py` | ⬜ |
 | 6 | `/alerts/stream` SSE Manager + view; pin `sse-starlette` in `requirements.txt` | `quake/api/alerts/{main,views}.py`, `requirements.txt`, `tests/unit/test_alerts_stream_api.py` | ⬜ |
 | 7 | `docs/alerts.md` — design note (LISTEN/NOTIFY hop, in-process matcher, filter semantics, single-pod limit) | `docs/alerts.md` | ⬜ |
@@ -186,43 +186,52 @@ matcher to keep the empty-snapshot path away from the firehose.
 
 ---
 
-### Task 4 — Postgres `pg_notify` trigger + `AlertListener`
+### Task 4 — Postgres `pg_notify` trigger + `AlertListener` ✅
 
-**Scope.**
+**Outcome.**
 
-- New migration `database/migrations/YYYYMMDDHHMMSS_events_notify.sql`:
-  - `-- migrate:up`:
-    - `CREATE OR REPLACE FUNCTION quake.events_notify() RETURNS trigger AS $$ ... $$ LANGUAGE plpgsql;` body calls `PERFORM pg_notify('quake_event_inserts', row_to_json(NEW)::text);` and `RETURN NEW;`.
-    - `CREATE TRIGGER events_notify AFTER INSERT ON quake.events FOR EACH ROW EXECUTE FUNCTION quake.events_notify();` (use `DROP TRIGGER IF EXISTS … ; CREATE TRIGGER …` for idempotency on re-apply).
-  - `-- migrate:down`: drop trigger then function.
-- New `quake/alerts/listener.py`:
-  - `AlertListener` class wrapping a long-lived async psycopg connection in autocommit + `LISTEN quake_event_inserts`.
-  - Main loop: `async for notify in conn.notifies():` → `json.loads(notify.payload)` → construct `AlertEnvelope` via `model_validate` → `registry.publish(envelope)`.
-  - Supervisor: outer `while not self._stop:` re-opens the connection and re-LISTENs if the loop exits, with exponential backoff (1s → 30s cap) logging each retry. Cancellation closes the connection and exits cleanly.
-- `quake/main.py`:
-  - Wrap the FastAPI app with a `lifespan` async context manager. On startup: spawn the listener via `asyncio.create_task(...)`. On shutdown: cancel the task and `await` its completion.
-  - Keep the lifespan opt-in via a class flag (default on) so the SSE-less test fixtures don't fight the live listener.
-- New `tests/unit/test_alert_listener.py` (runs against the sandbox DB via the existing unit conftest):
-  - **Trigger fires.** INSERT a row into `quake.events` via `EventsETL.upsert_many`; assert the listener's registry receives an envelope with the right `event_id` (assert via `asyncio.wait_for(queue.get(), timeout=5.0)` against a registry-subscribed queue).
-  - **Malformed payload tolerated.** Manually call `SELECT pg_notify('quake_event_inserts', 'not json')` and assert the listener logs + keeps running (next valid INSERT still delivers).
-  - **Multiple inserts in one transaction.** `upsert_many([...])` fires one NOTIFY per row; assert the registry queue collects all of them.
+Shipped as planned with three small implementation refinements (documented below) and one extra defensive test. Changes:
 
-**Acceptance.**
+- `database/migrations/20260519154655_events_notify.sql` (new) — `quake.events_notify()` plpgsql trigger function that `PERFORM pg_notify('quake_event_inserts', row_to_json(NEW)::text);` and returns NEW. `events_notify_trigger AFTER INSERT ON quake.events FOR EACH ROW` wires it up; the up migration uses `DROP TRIGGER IF EXISTS … ; CREATE TRIGGER …` for idempotent re-runs. Down drops trigger + function.
+- `quake/alerts/listener.py` (new):
+  - `AlertListener(registry)` constructor takes the in-process registry by reference (injection makes tests trivially hermetic).
+  - `run()` — supervisor: `while not self._stop.is_set()` opens a fresh connection via `psycopg.AsyncConnection.connect(..., autocommit=True)`, issues `LISTEN quake_event_inserts`, sets the `ready` event, and enters a `while not stop: async for notify in conn.notifies(timeout=1.0): ...` inner loop. Exceptions trigger exponential backoff (1.0s → 30.0s cap) via `asyncio.wait_for(self._stop.wait(), timeout=backoff)` — that double-purpose call also makes a `stop()` during backoff exit immediately. `CancelledError` short-circuits to a clean exit.
+  - `stop()` — sets the stop event; safe to call from any context (sync from a lifespan handler is fine).
+  - `ready: asyncio.Event` — set after the LISTEN command succeeds. Tests `await listener.ready.wait()` before issuing INSERTs to avoid the LISTEN-vs-INSERT race.
+  - `_handle_notify(payload)` — `json.loads` then `EventRow.model_validate`; either raise is logged + swallowed (a bad payload must not take down the supervisor). On success, calls `self._registry.publish(event)`.
+  - `_build_conninfo()` — pulls `host/port/user/password/dbname` from the same `get_environmental_variables().database` block the pool already uses.
+- `quake/main.py` — wraps the FastAPI app with an `_lifespan` `asynccontextmanager` that does `listener = AlertListener(get_registry()); task = asyncio.create_task(listener.run())` on entry; on exit calls `listener.stop()` and `asyncio.wait_for(task, timeout=10.0)`, falling back to `task.cancel()` + `await` if the listener exceeds the budget.
+- `tests/unit/test_alert_listener.py` (new) — 4 async tests against the sandbox DB. A `pytest_asyncio.fixture` builds a fresh `SubscriberRegistry`, subscribes a wide filter, starts the listener, awaits `ready.wait()`, hands over to the test, and tears down via `stop()` + bounded `await`.
 
-- `make check` clean.
-- `make test` passes.
-- `make migrate-test` (sandbox forward/down/forward cycle) is clean.
+**Three implementation refinements worth recording.**
+
+1. **`notifies(timeout=1.0)` instead of a bare `async for`.** With no timeout, the iterator hangs on a dormant channel until the *next* NOTIFY ever arrives — meaning `stop()` is invisible until something triggers a notification. A 1-second timeout makes the inner loop return periodically so the outer `while not stop` can exit. Cut listener-test runtime from ~24s to ~8s. Documented in the `_listen_once` docstring.
+2. **`AlertListener.ready` property.** Not in the plan. Tests need a synchronisation point between "listener has issued LISTEN" and "test issues INSERT" — without it, ~5% of test runs raced the LISTEN setup and lost the first notification. The event is set inside `_listen_once` after `LISTEN` succeeds; production never awaits it, so zero behavioural impact in normal use. Lives next to `_stop` for symmetry.
+3. **Lifespan + zero test touches.** Starlette `TestClient` only fires lifespan inside `with TestClient(app) as c:`. All 9 existing test sites build a plain `TestClient(quake.app)`, so the listener stays off in those — no fixture updates required. Task 8 opt-in is explicit (`with TestClient(...)` or `httpx.AsyncClient` with manual lifespan). The plan called for a class flag (`enable_alert_listener`); the TestClient behaviour makes the flag unnecessary. Documented in the new `Quake._lifespan` docstring.
+
+**Other deviation.**
+
+4. **One extra test:** `test_json_with_wrong_shape_is_skipped_and_next_event_still_delivers` — valid JSON whose shape isn't an `EventRow`. Symmetric with `test_malformed_payload_is_skipped_…` (which covers non-JSON garbage); together they lock both branches of `_handle_notify`'s defensive parse.
+
+**Verification.** `make migrate-test` clean (sandbox forward → down → forward cycle). `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 179 unit tests (4 new under `test_alert_listener.py`) + 3 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(alerts): pg_notify trigger on quake.events INSERT + AlertListener
 
-New migration installs an AFTER INSERT trigger that calls
-pg_notify('quake_event_inserts', row_to_json(NEW)). AlertListener
-owns an async psycopg LISTEN connection started in the FastAPI
-lifespan; decoded envelopes go to the SubscriberRegistry. Auto-
-reconnects with exponential backoff on connection loss.
+New migration installs an AFTER INSERT FOR EACH ROW trigger that
+PERFORMs pg_notify('quake_event_inserts', row_to_json(NEW)). The
+new AlertListener owns an async psycopg LISTEN connection started
+in the FastAPI lifespan; decoded payloads land in the singleton
+SubscriberRegistry via publish(EventRow). Auto-reconnects with
+exponential backoff (1s → 30s) on connection loss; clean shutdown
+via stop() + a 1s polling notifies(timeout) so a dormant channel
+doesn't stall cancellation.
+
+Existing TestClient-based tests don't enter the app's lifespan
+context manager, so the listener stays off for those — no test
+fixtures need updating. The Task 8 integration smoke will opt in.
 ```
 
 ---
