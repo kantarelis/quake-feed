@@ -59,7 +59,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 3 | Retrofit `/events*` with `Authenticate()` (no scope) | `quake/api/events/main.py`, `tests/unit/test_events_api_recent.py`, `tests/unit/test_events_api_query.py`, `tests/unit/test_main_api.py`, `tests/integration/test_read_api.py` | ✅ |
 | 4 | `EndpointLocksETL` + `poll_usgs` gating on `INGESTION_LOCK` | `database/etls/endpoint_locks.py`, `database/etls/ingestion_runs.py`, `quake/events/ingest.py`, `tests/unit/test_endpoint_locks_etl.py`, `tests/unit/test_ingest.py` | ✅ |
 | 5 | `/admin/locks` Manager + Views (admin-scoped) | `quake/api/locks/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_locks_api.py` | ✅ |
-| 6 | `/admin/ingest/*` Manager + Views (admin-scoped, async trigger) | `quake/api/ingest/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_ingest_api.py` | ⬜ |
+| 6 | `/admin/ingest/*` Manager + Views (admin-scoped, async trigger) | `quake/api/ingest/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_ingest_api.py` | ✅ |
 | 7 | Integration smoke — end-to-end auth + admin surface | `tests/integration/test_auth_admin.py` | ⬜ |
 
 ---
@@ -226,35 +226,36 @@ created). Router-level Authenticate(required_scope="admin").
 
 ---
 
-### Task 6 — `/admin/ingest/*` Manager + Views (admin-scoped, async trigger)
+### Task 6 — `/admin/ingest/*` Manager + Views (admin-scoped, async trigger) ✅
 
-**Scope.**
+**Outcome.**
 
-- New `quake/api/ingest/main.py`: `IngestManager` with `APIRouter(prefix="/admin/ingest")`, router-level `Authenticate(required_scope="admin")`.
-- New `quake/api/ingest/views.py`:
-  - `trigger()` — `task = poll_usgs.delay()`; returns `TriggerResponse(task_id=task.id, queued_at=datetime.now(timezone.utc))`.
-  - `status(limit: int = 10)` — `IngestionRunsETL().latest(limit)`, returns `IngestStatusResponse(count, runs)`.
-- New `quake/api/ingest/models.py`: `TriggerResponse`, `IngestRunResponse` (mirror `IngestionRunRow`), `IngestStatusResponse`.
-- `quake/main.py`: mount `IngestManager`.
-- New `tests/unit/test_ingest_api.py`:
-  - `test_trigger_enqueues_task` — monkey-patch `poll_usgs.delay` to return a stub `AsyncResult`-like object; admin key → 200; body contains a non-empty `task_id`.
-  - `test_status_returns_latest_runs` — seed two `ingestion_runs` rows; admin key → 200; rows in DESC order.
-  - `test_trigger_requires_admin_scope` — non-admin key → 403.
-  - `test_status_requires_auth` — no key → 401.
+Shipped as planned with one dispatch-mechanism swap and a wider negative-test pass. Changes:
 
-**Acceptance.**
+- `quake/api/ingest/models.py` (new) — `TriggerResponse(task_id, queued_at)`, `IngestRunResponse` (mirrors `IngestionRunRow`, `from_attributes=True`), `IngestStatusResponse(count, runs)`.
+- `quake/api/ingest/views.py` (new) — `IngestManagerViews` with `trigger()` and `status(limit)`. `trigger()` dispatches via `celery_app.send_task(_POLL_TASK_NAME)` where `_POLL_TASK_NAME = "quake.tasks.poll_usgs"`, captures `queued_at = datetime.now(timezone.utc)`, logs the task id + queued_at, and returns the envelope. `status(limit: int = Query(default=10, ge=1, le=200))` reads `IngestionRunsETL().latest(limit)` and wraps the rows in `IngestStatusResponse`.
+- `quake/api/ingest/main.py` (new) — `IngestManager` mounting `APIRouter(prefix="/admin/ingest", dependencies=[Depends(Authenticate(required_scope="admin"))])`. Routes wired with `operation_id`s `admin_ingest_trigger` / `admin_ingest_status`, tag `Admin`.
+- `quake/main.py` — imports `IngestManager`, constructs it, mounts its router after `LocksManager`.
+- `tests/unit/test_ingest_api.py` (new) — 8 tests across three fixtures (`admin_client` / `read_client` / `no_auth_client`, all sharing the StubVault override). Covers: trigger happy path with stubbed `send_task` (asserts task name + task_id + queued_at), trigger 401 (no key) / 403 (non-admin), status happy path (DESC order seed check), status with explicit `limit=2`, status 422 on `limit=0`, status 401 / 403.
 
-- `make check` clean.
-- `make test` passes.
+**Deviations from spec.**
+
+1. **Dispatch via `celery_app.send_task("quake.tasks.poll_usgs")` instead of `poll_usgs.delay()`.** The Celery task decorator returns a plain `FunctionType` from pyright's perspective; pyright doesn't see the runtime `.delay` attribute and `.delay()` calls fail the static-analysis gate without a line-level silencer (forbidden by the project conventions). `celery_app.send_task(name)` returns a properly-typed `AsyncResult`, takes the task name as a runtime string, and is the canonical dispatch-by-name path in Celery. Rationale documented in the views module docstring.
+2. **Eight tests instead of the planned four.** Added symmetric `read_client`/`no_auth_client` coverage on `status` plus `test_status_respects_limit` and `test_status_rejects_invalid_limit`. Matches the locks-test layout from Task 5; no additional production surface implied.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 117 unit tests (8 new under `test_ingest_api.py`) + 2 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(api): /admin/ingest/trigger + /admin/ingest/status (admin-scoped)
 
-trigger enqueues poll_usgs.delay() and returns {task_id, queued_at};
-status returns the latest ingestion_runs (DESC). Router-level admin
-scope.
+trigger enqueues quake.tasks.poll_usgs via celery_app.send_task and
+returns {task_id, queued_at}; status returns the latest ingestion_runs
+(DESC) capped by 'limit'. Router-level Authenticate(required_scope=
+"admin"). send_task is preferred over poll_usgs.delay() because the
+Celery decorator strips the typed AsyncResult return; send_task keeps
+pyright happy without sacrificing semantics.
 ```
 
 ---
