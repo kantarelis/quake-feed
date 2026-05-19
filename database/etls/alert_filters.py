@@ -121,6 +121,21 @@ class AlertFiltersETL(ExtractTransformLoad):
         )
         return [AlertFilterRow.model_validate(r) for r in rows]
 
+    def get_by_id(self, filter_id: int, api_key_id: int) -> AlertFilterRow | None:
+        """Return one filter row scoped to its owning key, or ``None`` if absent.
+
+        Used by the API layer to fetch the freshly-written row after
+        ``insert`` / ``update`` so the response body carries the full
+        ``AlertFilterRow`` shape (including the DB-assigned ``id`` and
+        ``created_at`` / ``updated_at`` timestamps).
+        """
+        row = self._execute(
+            "SELECT * FROM quake.alert_filters WHERE id = %s AND api_key_id = %s",
+            (filter_id, api_key_id),
+            fetch="one",
+        )
+        return AlertFilterRow.model_validate(row) if row else None
+
     def delete(self, filter_id: int, api_key_id: int) -> bool:
         """Delete a filter scoped to its owning API key. Returns whether a row was removed."""
         row = self._execute(

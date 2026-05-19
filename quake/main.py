@@ -25,6 +25,7 @@ from fastapi import FastAPI
 from __metadata__ import __description__, __title__, __version__
 from quake.alerts.listener import AlertListener
 from quake.alerts.registry import get_registry
+from quake.api.alerts.main import AlertFiltersManager
 from quake.api.events.main import EventsManager
 from quake.api.ingest.main import IngestManager
 from quake.api.locks.main import LocksManager
@@ -72,6 +73,8 @@ class Quake:
         self.app.include_router(locks_manager.run())
         ingest_manager = IngestManager(logger=self.logger)
         self.app.include_router(ingest_manager.run())
+        alert_filters_manager = AlertFiltersManager(logger=self.logger)
+        self.app.include_router(alert_filters_manager.run())
 
     def run(self, host: str, port: int) -> None:
         self.logger.info("Starting quake-feed", extra={"host": host, "port": port})

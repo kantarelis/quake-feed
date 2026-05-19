@@ -53,7 +53,7 @@ Each task is **one commit**. Run `make check` + `make test` before stopping. Sto
 | 2 | `FilterMatcher` — pure match of an event against a filter (mag, bbox, center+radius via haversine) | `quake/alerts/matcher.py`, `tests/unit/test_filter_matcher.py` | ✅ |
 | 3 | `SubscriberRegistry` — async per-key fanout: subscribe / unsubscribe / publish | `quake/alerts/registry.py`, `tests/unit/test_subscriber_registry.py` | ✅ |
 | 4 | Postgres `pg_notify` trigger + `AlertListener` (lifespan-managed LISTEN task) | `database/migrations/*_events_notify.sql`, `quake/alerts/listener.py`, `quake/main.py`, `tests/unit/test_alert_listener.py` | ✅ |
-| 5 | `/alerts/filters` Manager + Views (CRUD, per-key scoping) | `quake/api/alerts/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_alert_filters_api.py` | ⬜ |
+| 5 | `/alerts/filters` Manager + Views (CRUD, per-key scoping) | `quake/api/alerts/{main,views,models}.py`, `quake/main.py`, `tests/unit/test_alert_filters_api.py` | ✅ |
 | 6 | `/alerts/stream` SSE Manager + view; pin `sse-starlette` in `requirements.txt` | `quake/api/alerts/{main,views}.py`, `requirements.txt`, `tests/unit/test_alerts_stream_api.py` | ⬜ |
 | 7 | `docs/alerts.md` — design note (LISTEN/NOTIFY hop, in-process matcher, filter semantics, single-pod limit) | `docs/alerts.md` | ⬜ |
 | 8 | Integration smoke — end-to-end SSE | `tests/integration/test_alerts_stream.py` | ⬜ |
@@ -236,48 +236,54 @@ fixtures need updating. The Task 8 integration smoke will opt in.
 
 ---
 
-### Task 5 — `/alerts/filters` Manager + Views
+### Task 5 — `/alerts/filters` Manager + Views ✅
 
-**Scope.**
+**Outcome.**
 
-- New `quake/api/alerts/main.py`:
-  - `AlertFiltersManager` with `APIRouter(prefix="/alerts/filters", dependencies=[Depends(Authenticate())])` (any valid key).
-- New `quake/api/alerts/views.py`:
-  - `AlertFiltersManagerViews` with `list`, `create`, `update`, `delete`.
-  - `list` — `AlertFiltersETL().for_api_key(row.id)` → `AlertFiltersListResponse(count, filters)`.
-  - `create` — POST body `AlertFilter` (Task 1's DTO) → `AlertFiltersETL().insert(api_key_id=row.id, **body.model_dump())` → 201 with the new `AlertFilterResponse`.
-  - `update` — PATCH `/{filter_id}` body `AlertFilter` → full-replacement update via `AlertFiltersETL().update(filter_id, row.id, **body.model_dump())`; `False` return → 404 (`detail="no such filter"`). 200 with refreshed response.
-  - `delete` — `AlertFiltersETL().delete(filter_id, row.id)`; `False` → 404; 204 on success.
-  - Every view receives the `ApiKeyRow` by adding `current_key: ApiKeyRow = Depends(Authenticate())` on the view signature (one extra dep call per request — FastAPI dedupes; same pattern would work for future per-key endpoints).
-- New `quake/api/alerts/models.py`:
-  - `AlertFiltersListResponse(count, filters)`. Re-exports `AlertFilter` / `AlertFilterResponse` from `models/alerts.py` for the OpenAPI schema cohesion.
-- `quake/main.py` — mount `AlertFiltersManager`.
-- New `tests/unit/test_alert_filters_api.py`:
-  - Two clients via the same StubVault fixture pattern from Epic 5 tests: `client_a` (key A) and `client_b` (key B).
-  - **List empty** — GET returns `{"count": 0, "filters": []}`.
-  - **Create round-trip** — POST a magnitude+bbox filter; assert 201 + ETL row exists scoped to key A's id.
-  - **List shows created filters** in order.
-  - **Update** a filter; assert fields changed.
-  - **Update foreign filter is 404** — key B tries to update key A's filter id; ETL's `api_key_id` WHERE catches it; view 404s.
-  - **Delete** — 204; subsequent GET drops it.
-  - **Delete foreign filter is 404** — analogous cross-key defence.
-  - **Invalid filter body** (bbox + center together) → 422.
-  - **No auth** → 401.
+Shipped as planned with one auth-wiring deviation (kept the security posture, dropped the duplicated work) and a small ETL addition. Changes:
 
-**Acceptance.**
+- `database/etls/alert_filters.py` — added `get_by_id(filter_id, api_key_id) -> AlertFilterRow | None`. The existing `insert` returns only the new id and `update` returns only a `bool`; the create/update views need the full row (with DB-assigned `created_at` / `updated_at`) for their `AlertFilterResponse` body. The new method keys on both `id` and `api_key_id` so it inherits the same cross-key defence as the other methods.
+- `quake/api/alerts/models.py` (new) — re-exports `AlertFilter` and `AlertFilterResponse` from `models/alerts.py` for OpenAPI-import cohesion; defines `AlertFiltersListResponse(count, filters)`.
+- `quake/api/alerts/views.py` (new) — `AlertFiltersManagerViews` with `list_filters` / `create_filter` / `update_filter` / `delete_filter`. Every view takes `current_key: ApiKeyRow = Depends(Authenticate())` and threads `current_key.id` into the ETL. Create + update read back the row via `get_by_id` for the response; if the read-back returns `None` (race with a concurrent delete from the same key), the view 500s with a clear message rather than leaking a confusing 404 or empty body.
+- `quake/api/alerts/main.py` (new) — `AlertFiltersManager` mounting `APIRouter(prefix="/alerts/filters")`. Routes: GET (200), POST (201 via `status_code=…`), PATCH `/{filter_id}` (200), DELETE `/{filter_id}` (204). All under `tags=["Alerts"]` with explicit `operation_id`s (`alerts_filters_list` / `_create` / `_update` / `_delete`).
+- `quake/main.py` — mounts `AlertFiltersManager` after `IngestManager`.
+- `tests/unit/test_alert_filters_api.py` (new) — 15 tests across two clients (`client_a`, `client_b`) sharing one `StubVault`, plus a no-auth client. Covers: empty list, per-key list isolation, create round-trip + ETL cross-check, empty-filter 422, bbox+center 422, update happy path, update unknown 404, update foreign 404 (with row-not-mutated defence-in-depth check), delete 204 + ETL cross-check, delete unknown 404, delete foreign 404 (with row-still-present check), and 401 on every verb without auth.
 
-- `make check` clean.
-- `make test` passes.
+**Auth-wiring deviation (kept security posture, dropped duplicated work).**
+
+The plan declared auth at both the **router level** (``APIRouter(dependencies=[Depends(Authenticate())])``) and the **view signature level** (``current_key: ApiKeyRow = Depends(Authenticate())``), arguing "one extra dep call per request — FastAPI dedupes". On inspection, FastAPI's dependency cache keys on the callable's identity, and ``Authenticate()`` constructs a fresh class instance at each callsite — two ``Authenticate()`` calls are distinct callables, so they don't dedupe. The router-level dep would have doubled the DB+Vault round-trip per request without adding any guarantee the view-level dep doesn't already provide. Shipping resolution: **view-signature dep only**. Same security coverage, half the auth work. Documented in `quake/api/alerts/main.py`'s docstring.
+
+**Other deviations / additions.**
+
+1. **`AlertFiltersETL.get_by_id`** — not in the original scope but required by the views' "return the full row" contract. The alternative (re-querying via `for_api_key` then filtering by id in Python) would have made every create/update an O(N) read for the just-written row. The targeted SELECT is cheaper and matches the existing `ApiKeysETL.get_by_id` pattern from Epic 5.
+2. **Three extra tests** beyond the planned 9:
+   - `test_list_returns_only_this_keys_filters` — explicit cross-key list isolation (key A's GET never returns key B's rows). Symmetric to the per-key-scoped update/delete defence tests.
+   - `test_create_rejects_empty_filter` — pins the AlertFilter validator behaviour at the API boundary. Mirrors Task 1's `test_filter_empty_payload_is_rejected` at the unit layer.
+   - `test_update_foreign_filter_is_404` asserts the row was **not** mutated after the 404 — defence-in-depth check that the ETL's WHERE actually scoped the UPDATE rather than relying solely on the post-check return.
+3. **Read-back-after-write 500 paths.** Create and update both call `get_by_id` after the write. A `None` return there could only happen if a concurrent delete from the same key landed between the INSERT/UPDATE and the SELECT — a real race, just an unlikely one. The view raises `HTTPException(500, detail="filter inserted/updated but not found on read-back")` so the client sees an honest "retry" signal rather than a misleading 404. No production change; documented inline because the alternative paths weren't obvious from the spec.
+
+**Verification.** `make check` clean (isort/black/flake8/mypy/bandit/pyright). `make test` passes — 194 unit tests (15 new under `test_alert_filters_api.py`) + 3 integration.
 
 **Commit message (proposed).**
 
 ```
 feat(api): /alerts/filters (per-key CRUD)
 
-GET lists this key's filters; POST creates one; PATCH/{id} replaces;
-DELETE/{id} removes. Every write is scoped to the authenticated key
-via the ETL's api_key_id WHERE clause. Bbox XOR center+radius is
-enforced application-side via the AlertFilter validator from Task 1.
+AlertFiltersManager + Views serve GET (list), POST (create, 201),
+PATCH /{id} (update, 200), DELETE /{id} (delete, 204). Each view
+takes Depends(Authenticate()) and threads ApiKeyRow.id into the
+ETL — the existing api_key_id WHERE in update/delete is the cross-
+key defence, and a new AlertFiltersETL.get_by_id (also api_key_id-
+scoped) backs the response shape on create/update.
+
+Auth declared at the view signature, not the router — FastAPI
+doesn't dedupe per-call Authenticate() instances, so a router-
+level dep would double the DB+Vault round-trip per request.
+
+15 unit tests across two clients pin the contract: list/create/
+update/delete round-trips, empty-filter and bbox+center rejections,
+cross-key updates and deletes returning 404 without mutating the
+foreign row, and 401 on every verb without auth.
 ```
 
 ---
