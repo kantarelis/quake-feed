@@ -49,7 +49,7 @@ Each task is **one commit**. Frontend tasks run `make frontend-check` + `make fr
 
 | # | Task | Files (new unless noted) | Status |
 |---|------|--------------------------|--------|
-| 1 | Scaffold Vite+React+TS, Tailwind, ESLint/Prettier/tsc/Vitest gate, make targets, CI job | `frontend/**` (scaffold), `makefile` (replace stub targets), `.github/workflows/code_quality_assurance.yml` | ⬜ |
+| 1 | Scaffold Vite+React+TS, Tailwind, ESLint/Prettier/tsc/Vitest gate, make targets, CI job | `frontend/**` (scaffold), `makefile` (replace stub targets), `.github/workflows/code_quality_assurance.yml` | ✅ |
 | 2 | API layer — generated OpenAPI types, localStorage key store, typed `fetch` wrapper, Vite dev proxy | `frontend/src/api/{schema.d.ts,keyStore.ts,client.ts}`, `frontend/vite.config.ts`, `makefile` (`frontend-gen-api`) | ⬜ |
 | 3 | App shell — Tailwind layout, `react-router` routes, key context, Settings panel + "no key" gate | `frontend/src/{App,main}.tsx`, `frontend/src/components/**`, `frontend/src/context/**` | ⬜ |
 | 4 | Recent-events timeline view (`/events/recent`) | `frontend/src/pages/RecentEvents.tsx`, `frontend/src/hooks/useRecentEvents.ts` + tests | ⬜ |
@@ -59,33 +59,30 @@ Each task is **one commit**. Frontend tasks run `make frontend-check` + `make fr
 
 ---
 
-### Task 1 — Scaffold + tooling + quality gate
+### Task 1 — Scaffold + tooling + quality gate ✅
 
-**Scope.**
+**Outcome.**
 
-- `frontend/` Vite + React + TypeScript scaffold (strict `tsconfig`: `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`).
-- Tailwind CSS wired through PostCSS + Vite; a base stylesheet and the design tokens.
-- ESLint (typescript-eslint, react-hooks, jsx-a11y) + Prettier; config files committed.
-- Vitest + React Testing Library + jsdom; one trivial smoke test (`App` renders) so the test target is real.
-- Replace the three **stub** `makefile` targets and add the gate targets: `frontend-install`, `frontend-dev`, `frontend-build`, `frontend-check` (eslint + prettier --check + `tsc --noEmit`), `frontend-test` (vitest run).
-- Add a `frontend` CI job to `code_quality_assurance.yml` (Node 20, `npm ci`, `make frontend-check` + `make frontend-test`), parallel to `check`/`test`.
-- `frontend/package-lock.json` committed.
+Shipped as planned with a few version/tooling refinements (recorded below) and one environment-specific fix. Changes:
 
-**Acceptance.**
+- `frontend/` Vite 6 + React 19 + TypeScript scaffold. Strict `tsconfig.json` — beyond the plan's `strict` / `noUncheckedIndexedAccess` / `noImplicitOverride`, also `exactOptionalPropertyTypes`, `verbatimModuleSyntax`, `isolatedModules`, `noUnusedLocals/Parameters`. Single tsconfig covering `src` + `vite.config.ts`.
+- Tailwind CSS **v4** via the `@tailwindcss/vite` plugin (see deviation 1) + `@import "tailwindcss"` in `src/index.css`.
+- ESLint 9 flat config (`eslint.config.js`): `typescript-eslint` recommended + `react-hooks` + `jsx-a11y` + `react-refresh`, with `eslint-config-prettier` last to disable formatting rules. Prettier (`.prettierrc.json`, `printWidth: 100`).
+- Vitest + React Testing Library + jsdom; `src/test/setup.ts` wires `@testing-library/jest-dom/vitest`; one smoke test (`App` renders the title).
+- `src/{main,App}.tsx`, `index.css`, `vite-env.d.ts`, `index.html`, `frontend/README.md`.
+- `makefile`: added `NPM` / `FRONTEND_DIR` vars; replaced the three stub targets with real `frontend-install` (`npm ci`) / `frontend-dev` / `frontend-build`, plus `frontend-check` (eslint + prettier --check + `tsc --noEmit`) and `frontend-test` (vitest run).
+- `.github/workflows/code_quality_assurance.yml`: new `frontend` job (Node 20, `npm ci`, `make frontend-check` + `make frontend-test`), parallel to `check` / `test`.
 
-- `make frontend-install && make frontend-check && make frontend-test && make frontend-build` all clean.
-- `make check` + `make test` (Python) unaffected and green.
+**Deviations / additions beyond the spec.**
 
-**Commit message (proposed).**
+1. **Tailwind v4 via `@tailwindcss/vite`, not a PostCSS pipeline.** The plan said "Tailwind wired through PostCSS"; v4 (the current line) ships its own Vite plugin and CSS-first config — no `postcss.config.js`, no `tailwind.config.js`, automatic content detection. Still Tailwind, simpler setup. Build confirms it (~5.3 kB emitted CSS).
+2. **`package-lock.json` force-included in the repo `.gitignore`.** A global gitignore on this machine (`~/.config/git/ignore`) drops `package-lock.json` for every repo. Committing the lockfile is npm best practice and `npm ci` (the `frontend-install` target + the CI job) requires it, so `.gitignore` carries `!frontend/package-lock.json` (with a comment) to override the global rule. Verified the 6992-line lockfile landed in the commit.
+3. **Versions pinned to current majors:** Vite 6, React 19, Vitest 3, TypeScript 5.7, ESLint 9, Tailwind 4. `engines.node >= 20`; CI Node pinned to 20 (matches the existing pyright Node step). Prettier `printWidth` 100 (vs Python's 120) for readable TSX.
+4. **No Python-tool exclusions needed.** Confirmed `make check` still reports 2897 LOC (bandit) and pyright clean with `frontend/node_modules` present — the Python linters didn't traverse it, so no config changes were required.
 
-```
-chore(frontend): scaffold Vite + React + TS with Tailwind and the lint/test gate
+**Verification.** `make frontend-check` (eslint + prettier + tsc) clean, `make frontend-test` green (1 test), `make frontend-build` emits `frontend/dist`. `make check` + `make test` (Python) unaffected — 200 unit + 4 integration.
 
-Vite/React/TS strict scaffold, Tailwind via PostCSS, ESLint+Prettier,
-Vitest+RTL with one smoke test. makefile gains real frontend-install/
-dev/build plus frontend-check (eslint+prettier+tsc) and frontend-test
-(vitest); a parallel `frontend` CI job runs both on every push.
-```
+**Commit.** `94bbeec` — *feat: initialize frontend with React, Vite, and Tailwind CSS*.
 
 ---
 
