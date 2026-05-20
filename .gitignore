@@ -63,9 +63,15 @@ dmypy.json
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/coverage/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# A global gitignore on some dev machines drops package-lock.json. Force it
+# back in: npm ci (local `make frontend-install` + the CI `frontend` job) needs
+# the committed lockfile for reproducible installs.
+!frontend/package-lock.json
 
 # ---------------------------------------------------------------------------
 # Docker

@@ -19,6 +19,9 @@ PYRIGHT := npx --yes pyright --pythonpath $(VENV)/bin/python
 DOCKER := docker
 COMPOSE := docker compose
 
+NPM := npm
+FRONTEND_DIR := frontend
+
 # dbmate runs via the official Docker image so the host doesn't need a local
 # install. --network host lets the container reach localhost ports (compose
 # DB on 5432, sandbox DB on 5433). The database/ directory is mounted at /db
@@ -257,15 +260,23 @@ db-schema: ## Dump local schema to database/schema.sql (gitignored) and prettify
 	$(PY) -m database._pretty_schema
 
 # ===========================================================================
-# Frontend (Epic 7 placeholders)
+# Frontend (React + Vite + TypeScript, under frontend/)
 # ===========================================================================
 
-.PHONY: frontend-install frontend-dev frontend-build
-frontend-install: ## (stub) npm install in frontend/
-	@echo "not yet implemented (Epic 7)"
+.PHONY: frontend-install frontend-dev frontend-build frontend-check frontend-test
+frontend-install: ## Install frontend dependencies (npm ci)
+	cd $(FRONTEND_DIR) && $(NPM) ci
 
-frontend-dev: ## (stub) Vite dev server proxied to backend
-	@echo "not yet implemented (Epic 7)"
+frontend-dev: ## Vite dev server (proxied to the backend)
+	cd $(FRONTEND_DIR) && $(NPM) run dev
 
-frontend-build: ## (stub) Production frontend build
-	@echo "not yet implemented (Epic 7)"
+frontend-build: ## Production frontend build (emits frontend/dist)
+	cd $(FRONTEND_DIR) && $(NPM) run build
+
+frontend-check: ## Lint + format-check + typecheck the frontend
+	cd $(FRONTEND_DIR) && $(NPM) run lint
+	cd $(FRONTEND_DIR) && $(NPM) run format:check
+	cd $(FRONTEND_DIR) && $(NPM) run typecheck
+
+frontend-test: ## Frontend unit/component tests (vitest)
+	cd $(FRONTEND_DIR) && $(NPM) run test
