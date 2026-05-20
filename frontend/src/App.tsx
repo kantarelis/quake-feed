@@ -1,10 +1,21 @@
-// Placeholder shell — replaced by the routed layout in Task 3. Kept minimal so
-// the scaffold (Tailwind classes, React render, the test gate) is verifiable.
+import { Route, Routes } from "react-router";
+
+import { Layout } from "./components/Layout";
+import { ApiKeyProvider } from "./context/ApiKeyProvider";
+import { AlertConfig } from "./pages/AlertConfig";
+import { MapView } from "./pages/MapView";
+import { RecentEvents } from "./pages/RecentEvents";
+
 export default function App() {
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center gap-2 bg-slate-50 text-slate-900">
-      <h1 className="text-3xl font-semibold tracking-tight">quake-feed</h1>
-      <p className="text-slate-500">Realtime earthquake dashboard — frontend scaffold.</p>
-    </main>
+    <ApiKeyProvider>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<MapView />} />
+          <Route path="recent" element={<RecentEvents />} />
+          <Route path="alerts" element={<AlertConfig />} />
+        </Route>
+      </Routes>
+    </ApiKeyProvider>
   );
 }
