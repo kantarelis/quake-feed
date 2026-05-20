@@ -51,7 +51,7 @@ Each task is **one commit**. Frontend tasks run `make frontend-check` + `make fr
 |---|------|--------------------------|--------|
 | 1 | Scaffold Vite+React+TS, Tailwind, ESLint/Prettier/tsc/Vitest gate, make targets, CI job | `frontend/**` (scaffold), `makefile` (replace stub targets), `.github/workflows/code_quality_assurance.yml` | ✅ |
 | 2 | API layer — generated OpenAPI types, localStorage key store, typed `fetch` wrapper, Vite dev proxy | `frontend/src/api/{schema.d.ts,keyStore.ts,client.ts}`, `frontend/vite.config.ts`, `makefile` (`frontend-gen-api`), `quake/_openapi.py` | ✅ |
-| 3 | App shell — Tailwind layout, `react-router` routes, key context, Settings panel + "no key" gate | `frontend/src/{App,main}.tsx`, `frontend/src/components/**`, `frontend/src/context/**` | ⬜ |
+| 3 | App shell — Tailwind layout, `react-router` routes, key context, Settings panel + "no key" gate | `frontend/src/{App,main}.tsx`, `frontend/src/components/**`, `frontend/src/context/**`, `frontend/src/pages/**` | ✅ |
 | 4 | Recent-events timeline view (`/events/recent`) | `frontend/src/pages/RecentEvents.tsx`, `frontend/src/hooks/useRecentEvents.ts` + tests | ⬜ |
 | 5 | Alert-config form view (`/alerts/filters` create/list/delete) | `frontend/src/pages/AlertConfig.tsx`, `frontend/src/hooks/useFilters.ts` + tests | ⬜ |
 | 6 | Live map view — Leaflet + OSM + SSE via `fetch-event-source` | `frontend/src/pages/MapView.tsx`, `frontend/src/hooks/useAlertStream.ts` + tests | ⬜ |
@@ -113,29 +113,33 @@ Shipped as planned. Changes:
 
 ---
 
-### Task 3 — App shell (layout, routing, settings)
+### Task 3 — App shell (layout, routing, settings) ✅
 
-**Scope.**
+**Outcome.**
 
-- `frontend/src/main.tsx` / `App.tsx` — `BrowserRouter` with routes for `/` (map), `/recent`, `/alerts`.
-- Tailwind app shell: header, nav, content area; responsive.
-- `frontend/src/context/ApiKeyContext.tsx` — provides the key + a memoized client instance, subscribes to keyStore changes.
-- Settings panel/modal: paste / save / clear the key; shows masked state when set.
-- "No key configured" gate: views render a prompt (with the `make issue-api-key` hint) instead of firing unauthenticated requests.
-- Tests: shell renders nav; settings form saves to keyStore; gate shows prompt when no key.
+Shipped as planned with a few structural refinements (recorded below). Changes:
 
-**Acceptance.** `make frontend-check` + `make frontend-test` clean.
+- `main.tsx` — wraps `<App />` in `BrowserRouter` (split from `App` so tests can drive a `MemoryRouter`).
+- `App.tsx` — `ApiKeyProvider` → `Routes` → `Layout` with routes `/` (Map), `/recent` (Recent), `/alerts` (Alerts).
+- `context/apiKeyContext.ts` (context object + `useApiKey` hook) and `context/ApiKeyProvider.tsx` (provider mirroring the key store into reactive state) — split into two files (see deviation 1).
+- `components/Layout.tsx` — header (title + `NavLink` nav + settings) and a single `RequireApiKey`-gated `<Outlet />`.
+- `components/SettingsForm.tsx` (paste / save / clear, masked current key), `components/SettingsPanel.tsx` (header disclosure), `components/RequireApiKey.tsx` (gate; embeds `SettingsForm` + the `make issue-api-key` hint).
+- `pages/{MapView,RecentEvents,AlertConfig}.tsx` — placeholders so the routes are real; Tasks 4–6 fill them.
+- `test/setup.ts` — registers RTL `cleanup()` (see deviation 4).
+- `components/{SettingsForm,RequireApiKey}.test.tsx` + rewritten `App.test.tsx` — 6 new tests.
+- `package.json` / lockfile — `react-router` 7.15.1.
 
-**Commit message (proposed).**
+**Deviations / additions beyond the spec.**
 
-```
-feat(frontend): app shell, routing, and API-key settings panel
+1. **Context split into two files** (`apiKeyContext.ts` hook/const + `ApiKeyProvider.tsx` component) so neither file mixes a component export with hook/const exports — satisfies `react-refresh/only-export-components` without a suppression (the repo's no-suppression rule). The plan named a single `ApiKeyContext.tsx`.
+2. **No "memoized client instance" in context.** `client.ts` is stateless module functions that read the key store directly, so there's nothing to memoize — the context exposes the reactive `apiKey` + `setKey` / `clearKey` instead. Same effect as the plan intended.
+3. **Gate placed once in `Layout`** around `<Outlet />` (via `RequireApiKey`) rather than per-route. The no-key prompt embeds the reusable `SettingsForm` so users paste inline; the key is also editable anytime via the header `SettingsPanel`.
+4. **Added RTL `cleanup()` to `test/setup.ts`.** With `globals: false`, RTL doesn't auto-register cleanup, so multiple rendering tests would leak DOM between cases. Registering it suite-wide in setup fixes it.
+5. **`react-router` v7** (`7.15.1`), importing from the unified `react-router` package (v7 folded in the DOM bindings) — verified `BrowserRouter` / `MemoryRouter` / `Routes` / `NavLink` / `Outlet` all resolve from it.
 
-BrowserRouter shell (map / recent / alerts) with a Tailwind layout.
-ApiKeyContext exposes the key + a client instance; a Settings panel
-saves/clears the key in localStorage. Views gate behind a "set your
-API key" prompt until one is configured.
-```
+**Verification.** `make frontend-check` clean, `make frontend-test` green (18 tests across 5 files, 6 new), `make frontend-build` clean. No Python changed → `make check` / `make test` unaffected.
+
+**Commit.** `8f6afbb` — *feat(frontend): implement routing with React Router and API key management components*.
 
 ---
 
