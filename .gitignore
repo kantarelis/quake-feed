@@ -64,6 +64,9 @@ node_modules/
 frontend/dist/
 frontend/.vite/
 frontend/coverage/
+# Transient OpenAPI spec dump consumed by `make frontend-gen-api`; the
+# generated frontend/src/api/schema.d.ts is the committed artifact.
+frontend/openapi.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

@@ -263,9 +263,14 @@ db-schema: ## Dump local schema to database/schema.sql (gitignored) and prettify
 # Frontend (React + Vite + TypeScript, under frontend/)
 # ===========================================================================
 
-.PHONY: frontend-install frontend-dev frontend-build frontend-check frontend-test
+.PHONY: frontend-install frontend-dev frontend-build frontend-check frontend-test frontend-gen-api
 frontend-install: ## Install frontend dependencies (npm ci)
 	cd $(FRONTEND_DIR) && $(NPM) ci
+
+frontend-gen-api: ## Regenerate the typed API schema from the backend OpenAPI spec
+	$(PY) -m quake._openapi > $(FRONTEND_DIR)/openapi.json
+	cd $(FRONTEND_DIR) && $(NPM) run gen:api
+	rm -f $(FRONTEND_DIR)/openapi.json
 
 frontend-dev: ## Vite dev server (proxied to the backend)
 	cd $(FRONTEND_DIR) && $(NPM) run dev
