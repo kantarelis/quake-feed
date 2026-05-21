@@ -1,0 +1,312 @@
+# PLAN.md — Epic 8: Observability (Prometheus metrics + Grafana dashboard)
+
+**Status:** 🟡 In progress (draft — awaiting review)
+**Epic source:** [`MASTER_PLAN.md`](MASTER_PLAN.md) — Epic 8
+**Branch:** new feature branch off `kantarelis` (PRs target `kantarelis`)
+
+---
+
+## Goal
+
+Make the running stack observable end-to-end: the backend and worker expose
+Prometheus metrics, Prometheus scrapes both, and a **checked-in, provisioned
+Grafana dashboard** shows ingestion health and live-stream activity at a glance.
+
+Concretely:
+
+- **App metrics** for the things that can silently break: ingestion success/
+  latency/volume (`usgs_poll_seconds`, `usgs_poll_errors_total`,
+  `events_inserted_total`, `events_updated_total`, `events_revisions_total`) and
+  live-stream load (`sse_connections_active`).
+- **Working exposition on both processes.** The API serves `/metrics` on `:8000`
+  (already wired); the **Celery worker** gets a metrics endpoint on `:8001`
+  (currently a dead scrape target).
+- **A provisioned dashboard** — `monitoring/grafana/dashboards/ingestion.json` —
+  auto-loaded by the existing Grafana provisioning, with a **Loki logs panel** so
+  metrics and structured logs sit on one screen.
+- **`docs/observability.md`** explaining the two-target model, the metric
+  catalogue, and the worker-pool decision.
+
+## Current state (what already exists — do not rebuild)
+
+- `quake/api/main/views.py::metrics` serves `generate_latest()` at `/metrics`
+  (`:8000`). `quake/api/main/__init__` imports `functions.celery_metrics` so the
+  API registry isn't empty.
+- `functions/celery_metrics.py` defines `celery_task_total` +
+  `celery_task_duration_seconds` and connects `task_prerun/postrun/failure`.
+- `monitoring/prometheus.yml` already scrapes **both** `backend:8000` and
+  `celery_worker:8001`.
+- Grafana provisioning is in place: `provisioning/datasources/datasources.yml`
+  (Prometheus + Loki datasources) and `provisioning/dashboards/dashboards.yml`
+  (file provider pointing at `/var/lib/grafana/dashboards`, mounted from
+  `monitoring/grafana/dashboards/` in `docker-compose.yml`).
+- `functions/logger.py` already ships structured logs to Loki.
+
+## The core problem this epic must solve (drives Task 1)
+
+`prometheus_client` metrics live in a **per-process** registry. Two consequences:
+
+1. **The worker has no metrics endpoint.** Prometheus scrapes `celery_worker:8001`
+   but nothing listens there → the target is permanently DOWN, and the existing
+   `celery_task_*` counters are exposed nowhere.
+2. **Prefork scatters metrics across child processes.** Celery's default `prefork`
+   pool runs tasks in forked **child** processes. `task_*` signals and any
+   ingestion-metric increments fire in the child, while a metrics HTTP server
+   started at worker boot lives in the **main** process — so it would expose an
+   empty registry.
+
+Both must be fixed before any worker-side metric is meaningful. See design
+choice 2.
+
+## Design choices (locked up-front so tasks don't re-litigate)
+
+1. **Two scrape targets, per-process registries — no cross-process aggregation.**
+   API metrics on `:8000/metrics` (FastAPI, single uvicorn process); worker
+   metrics on `:8001/metrics` (`prometheus_client.start_http_server`). Prometheus
+   already targets both; dashboard queries `sum()` across `instance`/`job` so a
+   metric that only one process emits (e.g. `sse_connections_active` on the API,
+   ingestion counters on the worker) aggregates cleanly.
+
+2. **Worker runs a single-OS-process pool (`--pool=threads`) so its registry is
+   shared.** This is the simplest correct fix to the prefork problem: with a
+   threads pool there is one process, task execution and the metrics HTTP server
+   share one registry, and the ingestion workload is I/O-bound (USGS fetch + DB
+   writes — GIL released during I/O) so threads are a fine fit at this scale.
+   *Rejected alternative:* `prometheus_client` multiprocess mode
+   (`PROMETHEUS_MULTIPROC_DIR` + `MultiProcessCollector`) — the "correct at scale"
+   answer, but heavier (shared dir lifecycle, gauge modes, per-child files) and
+   unjustified for a local-only, single-pod, one-task-per-minute worker. Noted as
+   the migration path if real task parallelism is ever needed.
+
+3. **Metrics-server bootstrap is scoped to the worker via Celery's `worker_init`
+   signal.** The handler that calls `start_http_server(port)` connects to
+   `worker_init` (fires once, in the worker main process). The API process imports
+   the metric *definitions* but never fires `worker_init`, so it never tries to
+   bind `:8001` — no port clash, no conditional `if process == ...` branching.
+
+4. **App/domain metrics live in a new `functions/metrics.py`**, parallel to
+   `functions/celery_metrics.py`. Module-level metric objects on the default
+   registry; importing the module is the only registration step (same pattern as
+   `celery_metrics`).
+
+5. **Metric catalogue (names + types) is fixed here:**
+   | Metric | Type | Labels | Where incremented |
+   |--------|------|--------|-------------------|
+   | `usgs_poll_seconds` | Histogram | — | `poll_once` (worker) |
+   | `usgs_poll_errors_total` | Counter | — | `poll_once` except path (worker) |
+   | `events_inserted_total` | Counter | — | `poll_once` from `IngestionResult` (worker) |
+   | `events_updated_total` | Counter | — | `poll_once` from `IngestionResult` (worker) |
+   | `events_revisions_total` | Counter | — | `poll_once` from `IngestionResult` (worker) |
+   | `sse_connections_active` | Gauge | — | `SubscriberRegistry` subscribe/unsubscribe (API) |
+
+   No high-cardinality labels (no per-`event_id`). `events_revisions_total` is
+   added beyond the MASTER_PLAN list because the count is already on hand and
+   "USGS refined an estimate" is genuinely useful to chart.
+
+6. **Worker metrics port is env-configured** (`WORKER_METRICS_PORT`, default
+   `8001`), added to `.env.template` + `functions/environment.py` to match the
+   repo's config-via-env discipline. The `8001` in `prometheus.yml` stays the
+   source of truth for the scrape side.
+
+7. **Dashboard is code.** `monitoring/grafana/dashboards/ingestion.json` is a
+   committed dashboard JSON discovered by the existing file provider — no manual
+   Grafana clicks, no DB-stored dashboards. Panels target the Prometheus
+   datasource by name; one panel targets Loki.
+
+8. **Loki is a dashboard panel, not a build-out.** The logging→Loki pipeline
+   already exists; this epic adds a logs panel to the dashboard and verifies the
+   end-to-end path, rather than re-deriving Loki config.
+
+## Out of scope
+
+- **Alerting / Alertmanager.** No alert rules, no notification routing — dashboards
+  only.
+- **Multiprocess-mode metrics** (design choice 2) and any worker concurrency
+  beyond the threads pool.
+- **Per-endpoint HTTP metrics / RED method on the API** (request latency
+  histograms per route, `starlette-exporter`-style). Could be a later epic; this
+  epic targets ingestion + stream health, the things unique to this service.
+- **Recording rules / long-term storage / remote-write.** Default Prometheus
+  local TSDB only.
+- **Tracing** (OpenTelemetry / Tempo).
+- **New backend features.** Metrics observe existing paths; no behavioural change
+  to ingestion or the API beyond instrumentation + the worker pool flag.
+
+---
+
+## Tasks
+
+Each task is **one commit**. Every task runs `make check` + `make test`. Tasks
+touching `docker-compose.yml` / dashboard JSON also get a manual
+bring-up-the-stack verification noted in their acceptance. Stop after each task;
+wait for the user before starting the next.
+
+| # | Task | Files (new unless noted) | Status |
+|---|------|--------------------------|--------|
+| 1 | Worker metrics exposition — `start_http_server(:8001)` via `worker_init` + threads pool, so the worker registry (celery + future ingestion metrics) is actually scraped | `functions/celery_metrics.py` (mod), `functions/environment.py` (mod), `.env.template` (mod), `docker-compose.yml` (mod), `tests/unit/test_celery_metrics.py` | ⬜ |
+| 2 | App metrics module + ingestion instrumentation (`usgs_poll_seconds`, `usgs_poll_errors_total`, `events_{inserted,updated,revisions}_total`) wired into `poll_once` | `functions/metrics.py`, `quake/events/ingest.py` (mod), `tests/unit/test_metrics.py`, `tests/unit/test_ingest.py` (mod) | ⬜ |
+| 3 | `sse_connections_active` gauge wired into the subscriber registry, exposed on the API `/metrics` | `functions/metrics.py` (mod), `quake/alerts/registry.py` (mod), `tests/unit/test_subscriber_registry.py` (mod) | ⬜ |
+| 4 | Grafana ingestion-health dashboard (provisioned JSON) incl. a Loki logs panel | `monitoring/grafana/dashboards/ingestion.json`, `tests/unit/test_dashboard_provisioning.py` | ⬜ |
+| 5 | `docs/observability.md` + env/makefile polish (`make metrics`, Grafana hint) | `docs/observability.md`, `makefile` (mod), `README.md` (mod, optional) | ⬜ |
+
+---
+
+### Task 1 — Worker metrics exposition + threads pool
+
+**Scope.**
+
+- Add a `worker_init`-connected handler in `functions/celery_metrics.py` that calls
+  `prometheus_client.start_http_server(port)` once, where `port` comes from config
+  (design choice 6). Scoped to the worker by the signal (choice 3) — the API never
+  fires it.
+- Add `WORKER_METRICS_PORT` (default `8001`) to `functions/environment.py`
+  (`PrometheusConfig` or a small worker config block) and `.env.template`.
+- Change the `celery_worker` command in `docker-compose.yml` to `--pool=threads`
+  (choice 2). Leave `celery_beat` unchanged (it runs no tasks).
+- Confirm the existing `celery_task_*` counters now appear on `celery_worker:8001`.
+
+**Acceptance.** `make check` + `make test` clean. Unit test asserts the bootstrap
+calls `start_http_server` with the configured port (mock `start_http_server`; do
+**not** bind a real port in the test) and is connected to `worker_init`. Manual:
+`make up` → Prometheus `/targets` shows `celery_worker` UP and
+`curl celery_worker:8001/metrics` (from inside the network) lists `celery_task_total`.
+
+**Commit message (proposed).**
+
+```
+feat(observability): expose worker metrics on :8001
+
+Start a prometheus_client HTTP server in the Celery worker via the
+worker_init signal and switch the worker to a threads pool so task
+metrics share one process registry. Makes the celery_worker:8001
+scrape target live.
+```
+
+---
+
+### Task 2 — App metrics module + ingestion instrumentation
+
+**Scope.**
+
+- `functions/metrics.py` — define the ingestion metrics from the catalogue
+  (choice 5) as module-level objects on the default registry.
+- Instrument `quake/events/ingest.py::poll_once`: time the fetch→parse→upsert
+  block into `usgs_poll_seconds`; on the success path inc
+  `events_inserted_total` / `events_updated_total` / `events_revisions_total` by
+  the `IngestionResult` counts; on the except path inc `usgs_poll_errors_total`
+  (and still re-raise). The lock-skip early return increments nothing.
+- Tests: extend `tests/unit/test_ingest.py` (existing mock-client pattern) to
+  assert counter deltas after a successful poll, an error poll, and a lock-skip;
+  `tests/unit/test_metrics.py` for the module's metric registration. Read values
+  via `prometheus_client.REGISTRY.get_sample_value(...)` and assert **deltas**
+  (counters are process-global).
+
+**Acceptance.** `make check` + `make test` clean.
+
+**Commit message (proposed).**
+
+```
+feat(observability): ingestion metrics on poll_once
+
+functions/metrics.py defines usgs_poll_seconds, usgs_poll_errors_total
+and events_{inserted,updated,revisions}_total; poll_once observes poll
+duration and increments the counters from IngestionResult (errors on
+the except path, nothing on a lock-skip).
+```
+
+---
+
+### Task 3 — SSE connections gauge
+
+**Scope.**
+
+- Add `sse_connections_active` (Gauge) to `functions/metrics.py`.
+- In `quake/alerts/registry.py`: `inc()` on `subscribe`, `dec()` on `unsubscribe`
+  (the registry already owns both lifecycle points; the SSE generator's `finally`
+  guarantees unsubscribe). Keep the gauge consistent with `len(self._subs)`.
+- Exposed automatically on the API `/metrics` (the API process imports the alerts
+  registry).
+- Tests: extend `tests/unit/test_subscriber_registry.py` — gauge rises on
+  subscribe, falls on unsubscribe, and nets to zero after teardown.
+
+**Acceptance.** `make check` + `make test` clean.
+
+**Commit message (proposed).**
+
+```
+feat(observability): sse_connections_active gauge
+
+SubscriberRegistry increments/decrements a gauge on subscribe/unsubscribe;
+exposed on the API /metrics for live-stream load visibility.
+```
+
+---
+
+### Task 4 — Grafana ingestion-health dashboard
+
+**Scope.**
+
+- `monitoring/grafana/dashboards/ingestion.json` — a provisioned dashboard with
+  panels (all `sum()`-aggregated across instances, design choice 1):
+  - poll **success vs error rate** (`rate(usgs_poll_errors_total[5m])` vs poll
+    count / `celery_task_total{task_name="quake.tasks.poll_usgs"}`),
+  - poll **duration** p50/p95 (`histogram_quantile` over `usgs_poll_seconds`),
+  - **events inserted / updated / revisions** rate,
+  - **active SSE connections** (`sse_connections_active`),
+  - a **Loki logs** panel for the app stream.
+- Panels reference the provisioned datasources by name ("Prometheus", "Loki").
+- `tests/unit/test_dashboard_provisioning.py` — load the JSON, assert it parses,
+  has the expected panel titles, and every panel's `datasource` resolves to a name
+  declared in `provisioning/datasources/datasources.yml` (guards against drift
+  between the dashboard and the provisioned datasources).
+
+**Acceptance.** `make check` + `make test` clean (JSON-validity/provisioning test).
+Manual: `make up`, open Grafana, confirm the dashboard auto-loads and panels render
+once a poll or two has run.
+
+**Commit message (proposed).**
+
+```
+feat(observability): provisioned ingestion-health Grafana dashboard
+
+monitoring/grafana/dashboards/ingestion.json charts poll rate/latency,
+event insert/update/revision rates, active SSE connections, and a Loki
+logs panel. Auto-discovered by the existing dashboard provider; a unit
+test guards datasource-name drift.
+```
+
+---
+
+### Task 5 — Docs + env/makefile polish
+
+**Scope.**
+
+- `docs/observability.md` — the two-target scrape model (API `:8000`, worker
+  `:8001`), the worker threads-pool decision and why (prefork vs registry), the
+  metric catalogue, how to reach Prometheus/Grafana locally, and a couple of Loki
+  log queries. Linked from the README "Subsystems" table.
+- `makefile` — a small convenience target (e.g. `metrics` to curl both `/metrics`
+  endpoints, or a Grafana-URL echo); align with existing target style.
+- `README.md` (optional) — add the observability doc to the subsystems table.
+
+**Acceptance.** `make check` + `make test` clean (docs/makefile only — no Python
+change). Manual: dead-link check on the new doc.
+
+**Commit message (proposed).**
+
+```
+docs(observability): metric catalogue + scrape model + dashboard guide
+
+docs/observability.md explains the two-target Prometheus model, the
+worker threads-pool decision, the metric catalogue, and how to view
+Grafana/Loki locally. Adds a make helper and links the doc from README.
+```
+
+---
+
+## After all tasks ship
+
+- User confirms commit range, then asks Claude to:
+  - Mark Epic 8 ✅ Done in `MASTER_PLAN.md` with the commit range.
+  - Archive this `PLAN.md` to `docs/history/epic-08-observability.md` (single rename commit).
+- Root `PLAN.md` slot is then free for Epic 9 (Documentation polish).
