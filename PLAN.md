@@ -54,7 +54,7 @@ Each task is **one commit**. Frontend tasks run `make frontend-check` + `make fr
 | 3 | App shell — Tailwind layout, `react-router` routes, key context, Settings panel + "no key" gate | `frontend/src/{App,main}.tsx`, `frontend/src/components/**`, `frontend/src/context/**`, `frontend/src/pages/**` | ✅ |
 | 4 | Recent-events timeline view (`/events/recent`) | `frontend/src/pages/RecentEvents.tsx`, `frontend/src/hooks/useRecentEvents.ts` + tests | ✅ |
 | 5 | Alert-config form view (`/alerts/filters` create/list/delete) | `frontend/src/pages/AlertConfig.tsx`, `frontend/src/hooks/useFilters.ts` + tests | ✅ |
-| 6 | Live map view — Leaflet + OSM + SSE via `fetch-event-source` | `frontend/src/pages/MapView.tsx`, `frontend/src/hooks/useAlertStream.ts` + tests | ⬜ |
+| 6 | Live map view — Leaflet + OSM + SSE via `fetch-event-source` | `frontend/src/pages/MapView.tsx`, `frontend/src/hooks/useAlertStream.ts` + tests | ✅ |
 | 7 | Production serving (FastAPI static + SPA catch-all) + multi-stage Dockerfile + `docs/frontend.md` | `quake/main.py`, `Dockerfile`, `docs/frontend.md`, `tests/unit/test_spa_serving.py` | ⬜ |
 
 ---
@@ -209,15 +209,26 @@ before POSTing, surfacing backend 422s. Delete per row.
 
 ---
 
-### Task 6 — Live map view (Leaflet + SSE)
+### Task 6 — Live map view (Leaflet + SSE) ✅
 
-**Scope.**
+**Outcome.**
 
-- `frontend/src/hooks/useAlertStream.ts` — opens `/alerts/stream` via `@microsoft/fetch-event-source` (Bearer header), parses `event: alert` envelopes, exposes the live event list + connection state; aborts cleanly on unmount / key change. Handles 400 (no filters) with a "configure a filter" prompt.
-- `frontend/src/pages/MapView.tsx` — Leaflet map (OSM tiles) seeded with `/events/recent` markers, then live markers appended/updated from the SSE hook. Popups show magnitude / place / time.
-- Tests: SSE envelope→marker mapping (mock `fetchEventSource`); map component renders + handles the no-filters state.
+Shipped as planned, with library/marker refinements recorded below. Changes:
 
-**Acceptance.** `make frontend-check` + `make frontend-test` clean.
+- `frontend/src/hooks/useAlertStream.ts` (new) — subscribes to `/alerts/stream` via `@microsoft/fetch-event-source` so the `Authorization: Bearer` header rides along (native `EventSource` can't set headers). Parses `event: alert` frames into a deduped-by-`event_id`, newest-first, capped (200) list. `onopen` maps `400` → `status: "no-filters"` and a non-stream/`401`/other → `status: "error"` (with message), each throwing a private `FatalStreamError` to stop the library's retry loop; transient drops fall to `"connecting"` and let it reconnect. Aborts via `AbortController` on unmount / key change. Defines a hand-written `AlertEvent` type (see deviation 3).
+- `frontend/src/pages/MapView.tsx` — react-leaflet `MapContainer` + OSM `TileLayer`, seeded from `useRecentEvents` and merged with `useAlertStream` live events (live wins on id collision). Magnitude-banded `CircleMarker`s with popups (magnitude / place / time / USGS link), a connection-status badge, and a no-filters banner linking to `/alerts`.
+- `frontend/src/hooks/useAlertStream.test.tsx` (new) — 6 tests (mocked `fetchEventSource`, `ApiKeyProvider` wrapper): Bearer header, open, envelope→event mapping + dedupe/reorder, `400`→no-filters, `401`→error, transient drop→connecting.
+- `frontend/src/pages/MapView.test.tsx` (new) — 4 tests (mocked react-leaflet + both hooks): marker per seed event, live overrides seed on shared id, live status indicator, no-filters prompt + link target.
+- `package.json` / lockfile — added `@microsoft/fetch-event-source@^2.0.1`, `leaflet@^1.9.4`, `react-leaflet@^5.0.0` (deps) and `@types/leaflet@^1.9.21` (dev).
+
+**Deviations / additions beyond the spec.**
+
+1. **`react-leaflet` (v5, React-19-compatible) over vanilla Leaflet.** The idiomatic React binding; declarative markers fit the data-driven map and keep the component testable by mocking one module.
+2. **`CircleMarker` (vector) instead of default pin markers.** Sidesteps Leaflet's well-known default-icon path breakage under bundlers (no `L.Icon.Default` image hack, no marker PNG assets); magnitude maps naturally onto radius + color.
+3. **`AlertEvent` hand-written in the hook**, mirroring backend `models.alerts.AlertEnvelope`. The SSE body is absent from the generated `schema.d.ts` because FastAPI can't introspect an `EventSourceResponse` into the OpenAPI spec — so there's nothing to generate. Carries a "keep in sync with models/alerts.py" note.
+4. **react-leaflet mocked in the map test.** Leaflet needs real DOM geometry jsdom doesn't provide; mocking keeps the test deterministic and focused on the merge/marker/prompt logic. The real bundling is verified by `make frontend-build` (101 modules, `leaflet.css` in the emitted bundle).
+
+**Verification.** `make frontend-check` clean (eslint + prettier + tsc), `make frontend-test` green (63 tests across 12 files, 10 new), `make frontend-build` emits `dist` with Leaflet bundled. No Python changed → `make check` / `make test` not applicable.
 
 **Commit message (proposed).**
 
@@ -228,6 +239,8 @@ MapView renders OSM tiles seeded from /events/recent, then plots live
 events from useAlertStream — /alerts/stream consumed via fetch-event-
 source so the Bearer header rides along. No filters → prompt to add one.
 ```
+
+**Commit.** _(pending — to be filled in after you commit.)_
 
 ---
 
