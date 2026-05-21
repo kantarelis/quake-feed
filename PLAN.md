@@ -53,7 +53,7 @@ Each task is **one commit**. Frontend tasks run `make frontend-check` + `make fr
 | 2 | API layer — generated OpenAPI types, localStorage key store, typed `fetch` wrapper, Vite dev proxy | `frontend/src/api/{schema.d.ts,keyStore.ts,client.ts}`, `frontend/vite.config.ts`, `makefile` (`frontend-gen-api`), `quake/_openapi.py` | ✅ |
 | 3 | App shell — Tailwind layout, `react-router` routes, key context, Settings panel + "no key" gate | `frontend/src/{App,main}.tsx`, `frontend/src/components/**`, `frontend/src/context/**`, `frontend/src/pages/**` | ✅ |
 | 4 | Recent-events timeline view (`/events/recent`) | `frontend/src/pages/RecentEvents.tsx`, `frontend/src/hooks/useRecentEvents.ts` + tests | ✅ |
-| 5 | Alert-config form view (`/alerts/filters` create/list/delete) | `frontend/src/pages/AlertConfig.tsx`, `frontend/src/hooks/useFilters.ts` + tests | ⬜ |
+| 5 | Alert-config form view (`/alerts/filters` create/list/delete) | `frontend/src/pages/AlertConfig.tsx`, `frontend/src/hooks/useFilters.ts` + tests | ✅ |
 | 6 | Live map view — Leaflet + OSM + SSE via `fetch-event-source` | `frontend/src/pages/MapView.tsx`, `frontend/src/hooks/useAlertStream.ts` + tests | ⬜ |
 | 7 | Production serving (FastAPI static + SPA catch-all) + multi-stage Dockerfile + `docs/frontend.md` | `quake/main.py`, `Dockerfile`, `docs/frontend.md`, `tests/unit/test_spa_serving.py` | ⬜ |
 
@@ -175,15 +175,25 @@ first list with loading / empty / error states.
 
 ---
 
-### Task 5 — Alert-config form view
+### Task 5 — Alert-config form view ✅
 
-**Scope.**
+**Outcome.**
 
-- `frontend/src/hooks/useFilters.ts` — list (`GET`), create (`POST`), delete (`DELETE`) against `/alerts/filters`.
-- `frontend/src/pages/AlertConfig.tsx` — list current filters + a create form: `min_magnitude` and a shape selector (bbox **XOR** center+radius), with client-side validation mirroring the backend `AlertFilter` validator (partial/empty/both-shapes rejected, ranges, bbox ordering). Delete per row. Surfaces backend 422 messages.
-- Tests: hook CRUD (mocked client); form validation matrix; create → list refresh; delete.
+Shipped as planned with one structural refinement (the pure-helper split, recorded below). Changes:
 
-**Acceptance.** `make frontend-check` + `make frontend-test` clean.
+- `frontend/src/hooks/useFilters.ts` (new) — CRUD over `/alerts/filters` scoped to the authenticated key. Exposes `{ filters, loading, error, refresh, create, remove }`. The list loads on mount and re-loads after every successful mutation (via the same `reloadToken` effect pattern as `useRecentEvents`); `create` (POST) and `remove` (DELETE) **re-throw** on failure so the caller can surface the backend's 422, and reload on success. Also exports `AlertFilterRow` / `AlertFilterInput` type aliases off `Schemas`.
+- `frontend/src/pages/alertFilterForm.ts` (new) — **pure** form helpers, no component. `buildFilter()` validates the raw string form and emits an `AlertFilter` body (only the chosen shape's keys, so it's `extra="forbid"`-safe), mirroring the backend `AlertFilter` validator: optional `min_magnitude` range, bbox XOR center+radius, partial/empty rejection, lat/lon ranges, bbox ordering. `describeFilter()` renders a one-line row summary.
+- `frontend/src/pages/AlertConfig.tsx` — create form (`min_magnitude` + an exclusive shape radio that reveals the four bbox or three center+radius inputs), client-side validation before POST, backend 422 surfaced in a `role="alert"`, and a delete-per-row list with loading / empty / error states.
+- `frontend/src/pages/alertFilterForm.test.ts` (new) — 13 tests: full validation matrix (empty, magnitude-only, magnitude out-of-range/non-numeric, partial bbox, bbox out-of-range, inverted bbox, valid bbox+magnitude, partial center, non-positive radius, valid center) + `describeFilter`.
+- `frontend/src/hooks/useFilters.test.ts` (new) — 5 tests (mocked `apiRequest`): mount load, load error, create→reload, delete→reload, create re-throw.
+- `frontend/src/pages/AlertConfig.test.tsx` (new) — 7 tests (mocked hook): list rows, empty state, empty-submit block, shape-reveal, valid create, 422 surfaced, delete-by-id.
+
+**Deviations / additions beyond the spec.**
+
+1. **Validation split into a pure `alertFilterForm.ts` module** rather than inlined in `AlertConfig.tsx`. This keeps the validation matrix as fast pure-function tests and avoids exporting non-component helpers from the page file (which would trip `react-refresh/only-export-components` — the repo's no-suppression rule). Recorded as a helper-grouping decision within the planned page scope.
+2. **The "both shapes at once" case is structurally impossible**, because the UI uses an exclusive shape radio (none / bbox / center+radius) — so client validation covers partial/empty/ranges/ordering, and the backend stays the final authority (its 422 is surfaced verbatim). This satisfies the spec's "both-shapes rejected" intent without a redundant client check.
+
+**Verification.** `make frontend-check` clean (eslint + prettier + tsc), `make frontend-test` green (53 tests across 10 files, 25 new), `make frontend-build` emits `dist` (52 modules). No Python changed → `make check` / `make test` not applicable.
 
 **Commit message (proposed).**
 
@@ -194,6 +204,8 @@ useFilters wraps /alerts/filters GET/POST/DELETE; AlertConfig lists
 filters and validates the bbox-XOR-center+radius shape client-side
 before POSTing, surfacing backend 422s. Delete per row.
 ```
+
+**Commit.** _(pending — to be filled in after you commit.)_
 
 ---
 
