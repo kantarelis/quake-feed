@@ -19,6 +19,9 @@ PYRIGHT := npx --yes pyright --pythonpath $(VENV)/bin/python
 DOCKER := docker
 COMPOSE := docker compose
 
+NPM := npm
+FRONTEND_DIR := frontend
+
 # dbmate runs via the official Docker image so the host doesn't need a local
 # install. --network host lets the container reach localhost ports (compose
 # DB on 5432, sandbox DB on 5433). The database/ directory is mounted at /db
@@ -193,19 +196,18 @@ vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 
 # ===========================================================================
 # API-key issuance / revocation
-# Both scripts talk to the running compose stack (Vault on $VAULT_PORT, DB
-# on $DB_PORT). Issuance prints the raw key on stdout exactly once.
+# Both run inside the `backend` container (via `docker compose exec`), so they
+# reach Vault and the DB over the compose network — the stack must be up.
+# Issuance prints the raw key on stdout exactly once.
 # ===========================================================================
 
 .PHONY: issue-api-key revoke-api-key
 issue-api-key: ## Issue a new API key. Args: LABEL=<tag>, SCOPES=<comma>
-	@set -a; . ./.env; set +a; \
-	$(PY) scripts/issue_api_key.py $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
+	@$(COMPOSE) exec -T backend python -m scripts.issue_api_key $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
 
 revoke-api-key: ## Revoke an API key by id. Args: KEY_ID=<id>
 	@if [ -z "$(KEY_ID)" ]; then echo "Usage: make revoke-api-key KEY_ID=<id>"; exit 1; fi
-	@set -a; . ./.env; set +a; \
-	$(PY) scripts/revoke_api_key.py --key-id $(KEY_ID)
+	@$(COMPOSE) exec -T backend python -m scripts.revoke_api_key --key-id $(KEY_ID)
 
 # ===========================================================================
 # Database migrations (dbmate)
@@ -257,15 +259,28 @@ db-schema: ## Dump local schema to database/schema.sql (gitignored) and prettify
 	$(PY) -m database._pretty_schema
 
 # ===========================================================================
-# Frontend (Epic 7 placeholders)
+# Frontend (React + Vite + TypeScript, under frontend/)
 # ===========================================================================
 
-.PHONY: frontend-install frontend-dev frontend-build
-frontend-install: ## (stub) npm install in frontend/
-	@echo "not yet implemented (Epic 7)"
+.PHONY: frontend-install frontend-dev frontend-build frontend-check frontend-test frontend-gen-api
+frontend-install: ## Install frontend dependencies (npm ci)
+	cd $(FRONTEND_DIR) && $(NPM) ci
 
-frontend-dev: ## (stub) Vite dev server proxied to backend
-	@echo "not yet implemented (Epic 7)"
+frontend-gen-api: ## Regenerate the typed API schema from the backend OpenAPI spec
+	$(PY) -m quake._openapi > $(FRONTEND_DIR)/openapi.json
+	cd $(FRONTEND_DIR) && $(NPM) run gen:api
+	rm -f $(FRONTEND_DIR)/openapi.json
 
-frontend-build: ## (stub) Production frontend build
-	@echo "not yet implemented (Epic 7)"
+frontend-dev: ## Vite dev server (proxied to the backend)
+	cd $(FRONTEND_DIR) && $(NPM) run dev
+
+frontend-build: ## Production frontend build (emits frontend/dist)
+	cd $(FRONTEND_DIR) && $(NPM) run build
+
+frontend-check: ## Lint + format-check + typecheck the frontend
+	cd $(FRONTEND_DIR) && $(NPM) run lint
+	cd $(FRONTEND_DIR) && $(NPM) run format:check
+	cd $(FRONTEND_DIR) && $(NPM) run typecheck
+
+frontend-test: ## Frontend unit/component tests (vitest)
+	cd $(FRONTEND_DIR) && $(NPM) run test
