@@ -3,6 +3,25 @@
 # The dev/test stack (linters + pytest) is installed so `make test` can be
 # executed in-container without juggling a second image.
 
+# ---------------------------------------------------------------------------
+# Stage 1: build the React/Vite SPA. The compiled bundle is copied into the
+# Python runtime stage below; Node itself never ships in the final image.
+# ---------------------------------------------------------------------------
+FROM node:20-slim AS frontend-build
+
+WORKDIR /frontend
+
+# Install against the committed lockfile first so the dependency layer is
+# reused across source-only rebuilds.
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ ./
+RUN npm run build
+
+# ---------------------------------------------------------------------------
+# Stage 2: Python runtime.
+# ---------------------------------------------------------------------------
 FROM python:3.14-slim
 
 ENV PYTHONUNBUFFERED=1 \
@@ -26,6 +45,10 @@ COPY requirements.txt requirements-test.txt requirements-dev.txt ./
 RUN pip install -r requirements-dev.txt
 
 COPY . .
+
+# Pull in the SPA built in stage 1. FastAPI serves this at / (quake/main.py);
+# frontend/ source is .dockerignored, so this is the only frontend in the image.
+COPY --from=frontend-build /frontend/dist ./frontend/dist
 
 # Drop privileges: create a system user, hand ownership of /app to it, switch.
 RUN groupadd --system appuser \

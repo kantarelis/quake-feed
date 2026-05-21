@@ -44,9 +44,14 @@ dmypy.json
 .ruff_cache/
 
 # ---------------------------------------------------------------------------
-# Node / frontend (the backend image does not need the SPA source)
+# Node / frontend
 # ---------------------------------------------------------------------------
-frontend/
+# The SPA source IS part of the build context now: the Dockerfile's
+# frontend-build stage compiles it. Exclude only the install/build outputs —
+# node_modules is reinstalled with `npm ci` in that stage, and dist is produced
+# there (never copied from the host).
+frontend/node_modules/
+frontend/dist/
 node_modules/
 
 # ---------------------------------------------------------------------------

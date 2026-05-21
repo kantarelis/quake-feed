@@ -196,19 +196,18 @@ vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 
 # ===========================================================================
 # API-key issuance / revocation
-# Both scripts talk to the running compose stack (Vault on $VAULT_PORT, DB
-# on $DB_PORT). Issuance prints the raw key on stdout exactly once.
+# Both run inside the `backend` container (via `docker compose exec`), so they
+# reach Vault and the DB over the compose network — the stack must be up.
+# Issuance prints the raw key on stdout exactly once.
 # ===========================================================================
 
 .PHONY: issue-api-key revoke-api-key
 issue-api-key: ## Issue a new API key. Args: LABEL=<tag>, SCOPES=<comma>
-	@set -a; . ./.env; set +a; \
-	$(PY) scripts/issue_api_key.py $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
+	@$(COMPOSE) exec -T backend python -m scripts.issue_api_key $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
 
 revoke-api-key: ## Revoke an API key by id. Args: KEY_ID=<id>
 	@if [ -z "$(KEY_ID)" ]; then echo "Usage: make revoke-api-key KEY_ID=<id>"; exit 1; fi
-	@set -a; . ./.env; set +a; \
-	$(PY) scripts/revoke_api_key.py --key-id $(KEY_ID)
+	@$(COMPOSE) exec -T backend python -m scripts.revoke_api_key --key-id $(KEY_ID)
 
 # ===========================================================================
 # Database migrations (dbmate)
