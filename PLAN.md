@@ -52,7 +52,7 @@ Each task is **one commit**. Frontend tasks run `make frontend-check` + `make fr
 | 1 | Scaffold Vite+React+TS, Tailwind, ESLint/Prettier/tsc/Vitest gate, make targets, CI job | `frontend/**` (scaffold), `makefile` (replace stub targets), `.github/workflows/code_quality_assurance.yml` | ✅ |
 | 2 | API layer — generated OpenAPI types, localStorage key store, typed `fetch` wrapper, Vite dev proxy | `frontend/src/api/{schema.d.ts,keyStore.ts,client.ts}`, `frontend/vite.config.ts`, `makefile` (`frontend-gen-api`), `quake/_openapi.py` | ✅ |
 | 3 | App shell — Tailwind layout, `react-router` routes, key context, Settings panel + "no key" gate | `frontend/src/{App,main}.tsx`, `frontend/src/components/**`, `frontend/src/context/**`, `frontend/src/pages/**` | ✅ |
-| 4 | Recent-events timeline view (`/events/recent`) | `frontend/src/pages/RecentEvents.tsx`, `frontend/src/hooks/useRecentEvents.ts` + tests | ⬜ |
+| 4 | Recent-events timeline view (`/events/recent`) | `frontend/src/pages/RecentEvents.tsx`, `frontend/src/hooks/useRecentEvents.ts` + tests | ✅ |
 | 5 | Alert-config form view (`/alerts/filters` create/list/delete) | `frontend/src/pages/AlertConfig.tsx`, `frontend/src/hooks/useFilters.ts` + tests | ⬜ |
 | 6 | Live map view — Leaflet + OSM + SSE via `fetch-event-source` | `frontend/src/pages/MapView.tsx`, `frontend/src/hooks/useAlertStream.ts` + tests | ⬜ |
 | 7 | Production serving (FastAPI static + SPA catch-all) + multi-stage Dockerfile + `docs/frontend.md` | `quake/main.py`, `Dockerfile`, `docs/frontend.md`, `tests/unit/test_spa_serving.py` | ⬜ |
@@ -143,15 +143,24 @@ Shipped as planned with a few structural refinements (recorded below). Changes:
 
 ---
 
-### Task 4 — Recent-events timeline view
+### Task 4 — Recent-events timeline view ✅
 
-**Scope.**
+**Outcome.**
 
-- `frontend/src/hooks/useRecentEvents.ts` — fetches `/events/recent`, interval-polls, exposes loading / error / data.
-- `frontend/src/pages/RecentEvents.tsx` — newest-first list (time, magnitude, place, depth, link to USGS), with loading / empty / error states.
-- Tests: hook (mocked client: success, empty, error) and the page render across states.
+Shipped as planned. Changes:
 
-**Acceptance.** `make frontend-check` + `make frontend-test` clean.
+- `frontend/src/hooks/useRecentEvents.ts` (new) — fetches `/events/recent` on mount, then re-polls on an interval. Exposes `{ events, loading, error, refresh }`. Aborts the in-flight request and clears the timer on unmount; a failed background poll sets `error` but keeps the last good `events`, and the next success clears it. Errors are normalized to a string via the `Error.message` already shaped by `client.ts` (401 → "API key missing or invalid", etc.).
+- `frontend/src/pages/RecentEvents.tsx` — newest-first list (severity-banded magnitude badge, place, locale-formatted time, depth, tsunami flag, external USGS link). Four render branches keyed off `loading` / `error` / list size: loading (no data), full error + retry (no data), empty, and the list. When a refresh fails *with* data present, the list stays and a non-blocking "showing the last results" banner appears instead of the full error view.
+- `frontend/src/hooks/useRecentEvents.test.ts` (new) — 5 tests (mocked `apiRequest`): mount load, `limit` query param, empty list, error normalization, `refresh` refetch.
+- `frontend/src/pages/RecentEvents.test.tsx` (new) — 5 tests (mocked hook): loading, error + retry, empty, populated row + USGS link, background-failure banner.
+
+**Deviations / additions beyond the spec.**
+
+1. **Hook takes `limit` (default 50) / `intervalMs` (default 30000) options** rather than hard-coding them, and stays **decoupled from the key context** — the `RequireApiKey` gate guarantees a key and `client.ts` injects it, so the hook is a pure `apiRequest` wrapper. This keeps the hook test a plain `apiRequest` mock (no provider/router wrapping).
+2. **Two tests beyond the spec's "success / empty / error"** — the `refresh` refetch (hook) and the data-present error banner (page) — to cover the exact states the page branches on.
+3. **`loading` flips on every request (not just the first).** The page gates the full-screen loading view on an empty list, so background polls never flash the list back to "Loading…"; documented in the hook's docstring.
+
+**Verification.** `make frontend-check` clean (eslint + prettier + tsc), `make frontend-test` green (28 tests across 7 files, 10 new), `make frontend-build` emits `dist` (50 modules). No Python changed → `make check` / `make test` not applicable.
 
 **Commit message (proposed).**
 
@@ -161,6 +170,8 @@ feat(frontend): recent-events timeline
 useRecentEvents polls /events/recent; RecentEvents renders a newest-
 first list with loading / empty / error states.
 ```
+
+**Commit.** _(pending — to be filled in after you commit.)_
 
 ---
 
