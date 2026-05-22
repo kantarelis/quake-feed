@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Iterator
 
 import pytest
+from prometheus_client import REGISTRY
 
 from database.models import AlertFilterRow, EventRow
 from models.alerts import AlertEnvelope
@@ -23,6 +24,11 @@ from quake.alerts.registry import (
 )
 
 _NOW = datetime(2026, 5, 19, 12, 0, tzinfo=timezone.utc)
+
+
+def _gauge() -> float:
+    """Current sse_connections_active value (process-global; assert deltas)."""
+    return REGISTRY.get_sample_value("sse_connections_active") or 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -272,3 +278,45 @@ async def test_reset_registry_for_tests_rebuilds_the_singleton(reset_registry: N
     b = get_registry()
     assert b is not a
     assert b.get_subscriber_count() == 0
+
+
+# ---------------------------------------------------------------------------
+# sse_connections_active gauge
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_gauge_rises_on_subscribe_and_falls_on_unsubscribe() -> None:
+    reg = SubscriberRegistry()
+    before = _gauge()
+
+    a = reg.subscribe(api_key_id=1, filters=[_filter(min_magnitude=4.0)])
+    assert _gauge() - before == 1
+    b = reg.subscribe(api_key_id=2, filters=[_filter(min_magnitude=4.0)])
+    assert _gauge() - before == 2
+
+    reg.unsubscribe(a.id)
+    assert _gauge() - before == 1
+    reg.unsubscribe(b.id)
+    assert _gauge() - before == 0
+
+
+@pytest.mark.asyncio
+async def test_gauge_unchanged_when_unsubscribing_unknown_id() -> None:
+    reg = SubscriberRegistry()
+    before = _gauge()
+    reg.unsubscribe(9999)  # idempotent no-op must not move the gauge
+    assert _gauge() - before == 0
+
+
+@pytest.mark.asyncio
+async def test_gauge_nets_to_zero_after_subscribe_unsubscribe_cycle() -> None:
+    reg = SubscriberRegistry()
+    before = _gauge()
+
+    subs = [reg.subscribe(api_key_id=i, filters=[_filter(min_magnitude=4.0)]) for i in range(3)]
+    assert _gauge() - before == 3
+
+    for sub in subs:
+        reg.unsubscribe(sub.id)
+    assert _gauge() - before == 0

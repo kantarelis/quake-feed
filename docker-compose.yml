@@ -29,7 +29,11 @@ services:
   celery_worker:
     image: quake-feed:latest
     container_name: quake_celery_worker
-    command: celery -A config.celery_app worker --loglevel=info
+    # --pool=threads keeps task execution and the Prometheus HTTP exporter in a
+    # single OS process so they share one metrics registry (see
+    # functions/celery_metrics.py). The exporter binds WORKER_METRICS_PORT;
+    # prometheus scrapes it over the compose network as celery_worker:8001.
+    command: celery -A config.celery_app worker --loglevel=info --pool=threads
     env_file: .env
     depends_on:
       - rabbitmq
@@ -117,6 +121,20 @@ services:
     volumes:
       - ./monitoring/loki-config.yml:/etc/loki/local-config.yaml:ro
       - loki-data:/loki
+    networks:
+      - quake_platform
+
+  promtail:
+    image: grafana/promtail:3.2.0
+    container_name: quake_promtail
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      # Read-only socket: promtail discovers + tails app containers via the
+      # Docker API and pushes their logs to Loki (see promtail-config.yml).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
     networks:
       - quake_platform
 

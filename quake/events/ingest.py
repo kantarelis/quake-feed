@@ -18,6 +18,13 @@ from database.etls.events import EventsETL
 from database.etls.ingestion_runs import IngestionRunsETL
 from database.etls.revisions import RevisionsETL
 from functions.logger import setup_logger
+from functions.metrics import (
+    EVENTS_INSERTED_TOTAL,
+    EVENTS_REVISIONS_TOTAL,
+    EVENTS_UPDATED_TOTAL,
+    USGS_POLL_ERRORS_TOTAL,
+    USGS_POLL_SECONDS,
+)
 from quake.ingestion.usgs.client import UsgsClient, UsgsFeed
 from quake.ingestion.usgs.parser import parse_feed
 
@@ -73,12 +80,16 @@ def poll_once(
     client = client if client is not None else UsgsClient()
     try:
         try:
-            raw = client.fetch(feed)
-            events = parse_feed(raw)
-            counts = EventsETL().upsert_many(events)
-            revisions = RevisionsETL().count_since(run_started)
+            # USGS_POLL_SECONDS.time() observes the elapsed time on block exit,
+            # whether it completes or raises — so failed polls are timed too.
+            with USGS_POLL_SECONDS.time():
+                raw = client.fetch(feed)
+                events = parse_feed(raw)
+                counts = EventsETL().upsert_many(events)
+                revisions = RevisionsETL().count_since(run_started)
         except Exception as exc:
             error = str(exc)
+            USGS_POLL_ERRORS_TOTAL.inc()
             logger.exception("poll_once failed", extra={"run_id": run_id, "error": error})
             runs_etl.finish_run(run_id, inserted=0, updated=0, revisions=0, error=error)
             raise
@@ -89,6 +100,9 @@ def poll_once(
             updated=counts["updated"],
             revisions=revisions,
         )
+        EVENTS_INSERTED_TOTAL.inc(counts["inserted"])
+        EVENTS_UPDATED_TOTAL.inc(counts["updated"])
+        EVENTS_REVISIONS_TOTAL.inc(revisions)
         result = IngestionResult(
             inserted=counts["inserted"],
             updated=counts["updated"],

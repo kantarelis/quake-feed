@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from itertools import count
 
 from database.models import AlertFilterRow, EventRow
+from functions.metrics import SSE_CONNECTIONS_ACTIVE
 from models.alerts import AlertEnvelope
 from quake.alerts.matcher import matches
 
@@ -80,6 +81,7 @@ class SubscriberRegistry:
             queue=asyncio.Queue(maxsize=self._queue_maxsize),
         )
         self._subs[sub_id] = subscriber
+        SSE_CONNECTIONS_ACTIVE.inc()
         logger.info(
             "subscriber registered",
             extra={"sub_id": sub_id, "api_key_id": api_key_id, "filter_count": len(filters)},
@@ -90,6 +92,9 @@ class SubscriberRegistry:
         """Remove a slot. Idempotent on unknown ids."""
         sub = self._subs.pop(sub_id, None)
         if sub is not None:
+            # dec only when a slot was actually removed, so the idempotent
+            # no-op path keeps the gauge consistent with len(self._subs).
+            SSE_CONNECTIONS_ACTIVE.dec()
             logger.info(
                 "subscriber removed",
                 extra={"sub_id": sub_id, "api_key_id": sub.api_key_id},

@@ -1,8 +1,9 @@
 """Structured-logging setup.
 
-Emits JSON to stdout. Shipping to Loki is handled at the container layer
-(promtail tailing the docker log driver), so there is no in-process Loki
-push handler here. Epic 8 wires the container-side collection.
+Emits JSON to stdout. Shipping to Loki is handled at the container layer by the
+``promtail`` service (``docker-compose.yml`` + ``monitoring/promtail-config.yml``),
+which discovers the app containers via the Docker API and pushes their logs to
+Loki under ``job="quake-feed"`` — so there is no in-process Loki push handler here.
 """
 
 from __future__ import annotations

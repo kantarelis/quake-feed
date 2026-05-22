@@ -8,6 +8,8 @@ registrations actually take effect.
 
 from __future__ import annotations
 
+import importlib
+
 from celery import Celery
 
 from functions.environment import get_environmental_variables
@@ -35,3 +37,11 @@ celery_app.conf.update(
         },
     },
 )
+
+# Side-effect import: registers the Celery signal instrumentation defined in
+# functions.celery_metrics (per-task counters/latency + the worker_init hook
+# that starts the worker's Prometheus HTTP exporter) whenever the Celery app is
+# loaded — i.e. in the worker and beat processes. Routed through importlib so it
+# reads as an intentional side effect rather than an unused import. The API
+# process registers the same handlers via quake/api/main's own import.
+importlib.import_module("functions.celery_metrics")

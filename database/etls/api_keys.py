@@ -44,6 +44,16 @@ class ApiKeysETL(ExtractTransformLoad):
         )
         return ApiKeyRow.model_validate(row) if row is not None else None
 
+    def list_all(self) -> list[ApiKeyRow]:
+        """Return every key registration, oldest ``id`` first.
+
+        A lookup aid for ``make list-api-keys`` / ``make revoke-api-key`` —
+        the raw key is never stored here, so callers identify a key by its
+        ``id`` / ``label``.
+        """
+        rows = self._execute("SELECT * FROM quake.api_keys ORDER BY id", fetch="all")
+        return [ApiKeyRow.model_validate(row) for row in rows]
+
     def delete(self, api_key_id: int) -> None:
         """Hard-delete a row.
 
@@ -55,6 +65,20 @@ class ApiKeysETL(ExtractTransformLoad):
             "DELETE FROM quake.api_keys WHERE id = %s",
             (api_key_id,),
         )
+
+    def delete_revoked(self) -> int:
+        """Hard-delete every revoked key; return the number removed.
+
+        Operator cleanup (``make prune-api-keys``). Cascades to each key's
+        ``quake.alert_filters`` rows (FK ``ON DELETE CASCADE``); their Vault
+        secrets were already destroyed at revoke time. Active keys (``revoked_at
+        IS NULL``) are never touched.
+        """
+        rows = self._execute(
+            "DELETE FROM quake.api_keys WHERE revoked_at IS NOT NULL RETURNING id",
+            fetch="all",
+        )
+        return len(rows)
 
     def touch_last_seen(self, api_key_id: int) -> None:
         """Stamp ``last_seen_at = now()`` for the given key."""

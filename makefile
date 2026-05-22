@@ -161,6 +161,27 @@ prune: ## Reclaim disk: prune stopped containers, unused networks, dangling imag
 reset: full-clean build up ## Nuke everything, rebuild the image, bring the stack back up
 
 # ===========================================================================
+# Observability
+# Two scrape targets: the API on :8000 and the Celery worker on :8001 (see
+# docs/observability.md). The worker port is internal-only, so `metrics`
+# fetches both from inside the compose network via the backend container.
+# ===========================================================================
+
+.PHONY: metrics
+metrics: ## Print the custom Prometheus metrics from the API + worker, plus the UI URLs
+	@echo "── API metrics (backend:8000) ─────────────────────"
+	@$(COMPOSE) exec -T backend python -c \
+		"import urllib.request as u; print(u.urlopen('http://backend:8000/metrics').read().decode())" \
+		| grep -E '^(usgs_|events_|sse_|celery_)' || true
+	@echo "── Worker metrics (celery_worker:8001) ────────────"
+	@$(COMPOSE) exec -T backend python -c \
+		"import urllib.request as u; print(u.urlopen('http://celery_worker:8001/metrics').read().decode())" \
+		| grep -E '^(usgs_|events_|sse_|celery_)' || true
+	@echo "── UIs ────────────────────────────────────────────"
+	@echo "Prometheus targets : http://localhost:9090/targets"
+	@echo "Grafana            : http://localhost:3000  (dashboard: Quake-feed — Ingestion & Stream Health)"
+
+# ===========================================================================
 # Vault (dev-mode container)
 # `vault server -dev` auto-initializes/unseals, so init/unseal/seal are no-ops
 # in the current compose setup. The targets exist so the operator interface
@@ -201,13 +222,19 @@ vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 # Issuance prints the raw key on stdout exactly once.
 # ===========================================================================
 
-.PHONY: issue-api-key revoke-api-key
+.PHONY: issue-api-key list-api-keys revoke-api-key prune-api-keys
 issue-api-key: ## Issue a new API key. Args: LABEL=<tag>, SCOPES=<comma>
 	@$(COMPOSE) exec -T backend python -m scripts.issue_api_key $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
+
+list-api-keys: ## List issued API keys (id, label, scopes, status). No raw keys.
+	@$(COMPOSE) exec -T backend python -m scripts.list_api_keys
 
 revoke-api-key: ## Revoke an API key by id. Args: KEY_ID=<id>
 	@if [ -z "$(KEY_ID)" ]; then echo "Usage: make revoke-api-key KEY_ID=<id>"; exit 1; fi
 	@$(COMPOSE) exec -T backend python -m scripts.revoke_api_key --key-id $(KEY_ID)
+
+prune-api-keys: ## Delete all revoked API keys (cascades to their filters). Active keys untouched.
+	@$(COMPOSE) exec -T backend python -m scripts.prune_api_keys
 
 # ===========================================================================
 # Database migrations (dbmate)
