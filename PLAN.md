@@ -1,6 +1,6 @@
 # PLAN.md — Epic 8: Observability (Prometheus metrics + Grafana dashboard)
 
-**Status:** 🟡 In progress (draft — awaiting review)
+**Status:** 🟡 In progress — Task 1 done (`9147ecd`); Tasks 2–5 pending
 **Epic source:** [`MASTER_PLAN.md`](MASTER_PLAN.md) — Epic 8
 **Branch:** new feature branch off `kantarelis` (PRs target `kantarelis`)
 
@@ -143,7 +143,7 @@ wait for the user before starting the next.
 
 | # | Task | Files (new unless noted) | Status |
 |---|------|--------------------------|--------|
-| 1 | Worker metrics exposition — `start_http_server(:8001)` via `worker_init` + threads pool, so the worker registry (celery + future ingestion metrics) is actually scraped | `functions/celery_metrics.py` (mod), `functions/environment.py` (mod), `.env.template` (mod), `docker-compose.yml` (mod), `tests/unit/test_celery_metrics.py` | ⬜ |
+| 1 | Worker metrics exposition — `start_http_server(:8001)` via `worker_init` + threads pool, so the worker registry (celery + future ingestion metrics) is actually scraped | `functions/celery_metrics.py` (mod), `functions/environment.py` (mod), `.env.template` (mod), `docker-compose.yml` (mod), `config.py` (mod, +1 deviation), `tests/unit/test_celery_metrics.py` | ✅ `9147ecd` |
 | 2 | App metrics module + ingestion instrumentation (`usgs_poll_seconds`, `usgs_poll_errors_total`, `events_{inserted,updated,revisions}_total`) wired into `poll_once` | `functions/metrics.py`, `quake/events/ingest.py` (mod), `tests/unit/test_metrics.py`, `tests/unit/test_ingest.py` (mod) | ⬜ |
 | 3 | `sse_connections_active` gauge wired into the subscriber registry, exposed on the API `/metrics` | `functions/metrics.py` (mod), `quake/alerts/registry.py` (mod), `tests/unit/test_subscriber_registry.py` (mod) | ⬜ |
 | 4 | Grafana ingestion-health dashboard (provisioned JSON) incl. a Loki logs panel | `monitoring/grafana/dashboards/ingestion.json`, `tests/unit/test_dashboard_provisioning.py` | ⬜ |
@@ -151,35 +151,51 @@ wait for the user before starting the next.
 
 ---
 
-### Task 1 — Worker metrics exposition + threads pool
+### Task 1 — Worker metrics exposition + threads pool ✅ `9147ecd`
 
-**Scope.**
+**Outcome.** Shipped as planned.
 
-- Add a `worker_init`-connected handler in `functions/celery_metrics.py` that calls
-  `prometheus_client.start_http_server(port)` once, where `port` comes from config
-  (design choice 6). Scoped to the worker by the signal (choice 3) — the API never
-  fires it.
-- Add `WORKER_METRICS_PORT` (default `8001`) to `functions/environment.py`
-  (`PrometheusConfig` or a small worker config block) and `.env.template`.
-- Change the `celery_worker` command in `docker-compose.yml` to `--pool=threads`
-  (choice 2). Leave `celery_beat` unchanged (it runs no tasks).
-- Confirm the existing `celery_task_*` counters now appear on `celery_worker:8001`.
+- `functions/celery_metrics.py` — added `_start_metrics_server`, connected via
+  `@worker_init.connect` (matching the file's existing decorator-based signal
+  pattern). It reads the port from config and calls
+  `prometheus_client.start_http_server(port)` once in the worker main process.
+  Module docstring updated to note the new `worker_init` hook and that the module
+  must be imported in the worker boot path.
+- `functions/environment.py` — added a small `WorkerConfig(metrics_port: int)`
+  block (chosen over folding into `PrometheusConfig`, which models the Prometheus
+  *server* host/port, not exposition). `WORKER_METRICS_PORT` is read in
+  `_load_from_env` via `os.environ.get(..., "8001")` — **optional with a default**
+  so the API and test envs need not set it (and the sandbox env helper needed no
+  change).
+- `.env.template` — added `WORKER_METRICS_PORT=8001` under a "Celery worker
+  metrics" comment tying it to the `celery_worker:8001` scrape target.
+- `docker-compose.yml` — `celery_worker` command gained `--pool=threads`;
+  `celery_beat` left unchanged.
+- `tests/unit/test_celery_metrics.py` — two tests, both mocking
+  `start_http_server` (no real socket): handler binds the configured port (direct
+  call), and `worker_init.send_robust(...)` triggers it (proves the signal wiring;
+  `send_robust` isolates from unrelated receivers).
 
-**Acceptance.** `make check` + `make test` clean. Unit test asserts the bootstrap
-calls `start_http_server` with the configured port (mock `start_http_server`; do
-**not** bind a real port in the test) and is connected to `worker_init`. Manual:
-`make up` → Prometheus `/targets` shows `celery_worker` UP and
-`curl celery_worker:8001/metrics` (from inside the network) lists `celery_task_total`.
+**Deviation (1, structural — flagged and approved at review).** Added
+`config.py` to the touched files, outside the planned scope. `functions.celery_metrics`
+was imported **only** by the API (`quake/api/main/__init__.py`); nothing in the
+worker boot path imported it, so neither the new `worker_init` handler *nor the
+existing `celery_task_*` handlers* would have registered in the worker — making
+the acceptance ("`celery_task_total` appears on `celery_worker:8001`")
+unreachable. Fixed with a side-effect import in `config.py` (the `-A` app module,
+guaranteed loaded at worker boot), routed through `importlib.import_module(...)`
+to stay lint-clean without suppressions — the same idiom `tests/unit/test_tasks.py`
+already uses. No `ports:`/`expose:` was added: Prometheus reaches
+`celery_worker:8001` over the compose network without host publishing.
 
-**Commit message (proposed).**
+**Verification.** `make check` clean (isort, black, flake8, mypy, bandit, pyright).
+`make test` green — 208 unit + 4 integration. Manual `make up` / Prometheus
+`/targets` check remains a user step.
+
+**Commit message (as committed).**
 
 ```
-feat(observability): expose worker metrics on :8001
-
-Start a prometheus_client HTTP server in the Celery worker via the
-worker_init signal and switch the worker to a threads pool so task
-metrics share one process registry. Makes the celery_worker:8001
-scrape target live.
+feat(metrics): add Celery worker metrics exposure and configuration
 ```
 
 ---
