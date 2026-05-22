@@ -12,6 +12,7 @@
 ## 🧭 Table of Contents
 
 - [🏗️ Overview](#overview)
+- [🎬 Demo](#demo)
 - [📁 Project Structure](#project-structure)
 - [⚙️ Prerequisites](#prerequisites)
 - [🚀 Quick Start](#quick-start)
@@ -38,6 +39,28 @@
 The stack is intentionally a clean public mirror of a production backend architecture (Manager/Views, dbmate migrations, Celery+RabbitMQ scheduling, Vault-backed secrets, Loki/Prometheus/Grafana observability), reskinned onto a public, no-friction dataset.
 
 All services are orchestrated via `docker-compose`; development utilities are managed through a Makefile. Deployment is **local-only** — no cloud accounts required.
+
+
+<a id="demo"></a>
+
+## 🎬 Demo
+
+<!--
+  demo.gif is recorded by hand and committed — it is NOT produced by the build,
+  so this embed is a broken link until the file exists. Record it before
+  publishing the repo; see docs/assets/RECORDING.md for the exact capture +
+  ffmpeg-palette commands.
+-->
+
+<p align="center">
+  <img
+    src="docs/assets/demo.gif"
+    alt="quake-feed dashboard: the Leaflet map plots a live earthquake the moment its SSE alert arrives, beside the recent-events timeline"
+    width="820"
+  />
+</p>
+
+The dashboard subscribing to `/alerts/stream`: a new USGS event is ingested, matched against the active filter, and pushed to the browser — the marker drops on the map in real time. How the clip is produced: [`docs/assets/RECORDING.md`](docs/assets/RECORDING.md).
 
 
 <a id="project-structure"></a>
@@ -252,12 +275,12 @@ Operational and architectural deep-dives live in [`docs/`](docs/):
 
 A single artifact aimed at recruiters scanning for backend / full-stack / data engineering signal.
 
-| Role | What you'll find here |
-| ---- | ---------------------- |
-| **Software Engineer** | Typed Python 3.14, isort/black/flake8/mypy/bandit-gated CI, tested with pytest, clean module boundaries, Manager/Views separation. |
-| **Backend Engineer** | FastAPI service with REST + SSE, API-key auth dependency, Celery+RabbitMQ task scheduling, Vault-backed secret handling, observability via Prometheus/Grafana/Loki. |
-| **Full-Stack Engineer** | React + Vite + TypeScript + Leaflet dashboard with a live map, recent-events timeline, and an alert-config form backed by the SSE stream. |
-| **Data Engineer** | dbmate-versioned schema, TimescaleDB hypertable design, ingestion worker with dedupe + revision tracking (USGS refines magnitudes after the initial report), per-poll ingestion log for ops dashboards. |
+| Role | What you'll find here | Where to look |
+| ---- | --------------------- | ------------- |
+| **Software Engineer** | Typed Python 3.14, isort/black/flake8/mypy/bandit-gated CI, pytest suite, clean module boundaries, Manager/Views separation. | `quake/main.py`, `quake/api/*/main.py`, `.github/workflows/code_quality_assurance.yml`, `tests/` |
+| **Backend Engineer** | FastAPI REST + SSE, API-key auth dependency, Celery + RabbitMQ scheduling, Vault-backed secrets, Prometheus/Grafana/Loki observability. | `quake/api/auth.py`, `quake/tasks.py` + `config.py`, `functions/vault.py`, `functions/metrics.py` |
+| **Full-Stack Engineer** | React + Vite + TypeScript + Leaflet dashboard: live map, recent-events timeline, and an alert-config form on the SSE stream. | `frontend/src/`, [`docs/frontend.md`](docs/frontend.md) |
+| **Data Engineer** | dbmate-versioned schema, TimescaleDB hypertable, ingestion worker with dedupe + revision tracking (USGS refines magnitudes after the initial report), per-poll ingestion log. | `database/migrations/`, `quake/events/ingest.py`, `quake/ingestion/usgs/` |
 
 
 <a id="notes"></a>
