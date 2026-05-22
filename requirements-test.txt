@@ -16,6 +16,9 @@ pytest-asyncio==1.3.0
 pytest-cov==7.1.0
 coverage-badge==1.1.2
 respx==0.23.1
+# Parsed by test_dashboard_provisioning to read the Grafana datasource names.
+# Already present transitively (bandit), but declared so the test venv owns it.
+PyYAML==6.0.3
 # coverage-badge imports pkg_resources, which was removed from setuptools
 # in 81.0.0. Until coverage-badge migrates to importlib.metadata, pin
 # setuptools below that cutoff so the badge target works on fresh venvs.

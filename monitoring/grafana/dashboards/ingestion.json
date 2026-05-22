@@ -1,0 +1,140 @@
+{
+  "uid": "quake-ingestion",
+  "title": "Quake-feed — Ingestion & Stream Health",
+  "tags": ["quake-feed", "observability"],
+  "timezone": "utc",
+  "schemaVersion": 39,
+  "version": 1,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Poll rate & errors",
+      "description": "USGS poll cadence (celery_task_total for poll_usgs) against the ingestion error rate. Summed across instances so the worker target aggregates cleanly.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": "Prometheus",
+          "expr": "sum(rate(celery_task_total{task_name=\"quake.tasks.poll_usgs\"}[5m]))",
+          "legendFormat": "polls/s"
+        },
+        {
+          "refId": "B",
+          "datasource": "Prometheus",
+          "expr": "sum(rate(usgs_poll_errors_total[5m]))",
+          "legendFormat": "errors/s"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Poll duration (p50 / p95)",
+      "description": "Quantiles over usgs_poll_seconds. Note: failed polls are also timed, so these mix success and failure latency.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": "Prometheus",
+          "expr": "histogram_quantile(0.50, sum(rate(usgs_poll_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p50"
+        },
+        {
+          "refId": "B",
+          "datasource": "Prometheus",
+          "expr": "histogram_quantile(0.95, sum(rate(usgs_poll_seconds_bucket[5m])) by (le))",
+          "legendFormat": "p95"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Event ingest rate (inserted / updated / revisions)",
+      "description": "Per-second rate of events inserted, updated, and revised by ingestion.",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": "Prometheus",
+          "expr": "sum(rate(events_inserted_total[5m]))",
+          "legendFormat": "inserted/s"
+        },
+        {
+          "refId": "B",
+          "datasource": "Prometheus",
+          "expr": "sum(rate(events_updated_total[5m]))",
+          "legendFormat": "updated/s"
+        },
+        {
+          "refId": "C",
+          "datasource": "Prometheus",
+          "expr": "sum(rate(events_revisions_total[5m]))",
+          "legendFormat": "revisions/s"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Active SSE connections",
+      "description": "Currently-connected SSE alert subscribers (emitted by the API process).",
+      "datasource": "Prometheus",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto",
+        "textMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": "Prometheus",
+          "expr": "sum(sse_connections_active)",
+          "legendFormat": "connections"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "logs",
+      "title": "Application logs",
+      "description": "App log stream from Loki. Requires a log collector that ships container stdout to Loki under job=\"quake-feed\".",
+      "datasource": "Loki",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 16 },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "wrapLogMessage": true,
+        "enableLogDetails": true,
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": "Loki",
+          "expr": "{job=\"quake-feed\"} | json",
+          "queryType": "range"
+        }
+      ]
+    }
+  ]
+}
