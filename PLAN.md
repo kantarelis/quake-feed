@@ -1,6 +1,6 @@
 # PLAN.md — Epic 8: Observability (Prometheus metrics + Grafana dashboard)
 
-**Status:** 🟡 In progress — Task 1 done (`9147ecd`); Tasks 2–5 pending
+**Status:** 🟡 In progress — Tasks 1–2 done (`9147ecd`, `fce892e`); Tasks 3–5 pending
 **Epic source:** [`MASTER_PLAN.md`](MASTER_PLAN.md) — Epic 8
 **Branch:** new feature branch off `kantarelis` (PRs target `kantarelis`)
 
@@ -144,7 +144,7 @@ wait for the user before starting the next.
 | # | Task | Files (new unless noted) | Status |
 |---|------|--------------------------|--------|
 | 1 | Worker metrics exposition — `start_http_server(:8001)` via `worker_init` + threads pool, so the worker registry (celery + future ingestion metrics) is actually scraped | `functions/celery_metrics.py` (mod), `functions/environment.py` (mod), `.env.template` (mod), `docker-compose.yml` (mod), `config.py` (mod, +1 deviation), `tests/unit/test_celery_metrics.py` | ✅ `9147ecd` |
-| 2 | App metrics module + ingestion instrumentation (`usgs_poll_seconds`, `usgs_poll_errors_total`, `events_{inserted,updated,revisions}_total`) wired into `poll_once` | `functions/metrics.py`, `quake/events/ingest.py` (mod), `tests/unit/test_metrics.py`, `tests/unit/test_ingest.py` (mod) | ⬜ |
+| 2 | App metrics module + ingestion instrumentation (`usgs_poll_seconds`, `usgs_poll_errors_total`, `events_{inserted,updated,revisions}_total`) wired into `poll_once` | `functions/metrics.py`, `quake/events/ingest.py` (mod), `tests/unit/test_metrics.py`, `tests/unit/test_ingest.py` (mod) | ✅ `fce892e` |
 | 3 | `sse_connections_active` gauge wired into the subscriber registry, exposed on the API `/metrics` | `functions/metrics.py` (mod), `quake/alerts/registry.py` (mod), `tests/unit/test_subscriber_registry.py` (mod) | ⬜ |
 | 4 | Grafana ingestion-health dashboard (provisioned JSON) incl. a Loki logs panel | `monitoring/grafana/dashboards/ingestion.json`, `tests/unit/test_dashboard_provisioning.py` | ⬜ |
 | 5 | `docs/observability.md` + env/makefile polish (`make metrics`, Grafana hint) | `docs/observability.md`, `makefile` (mod), `README.md` (mod, optional) | ⬜ |
@@ -200,34 +200,42 @@ feat(metrics): add Celery worker metrics exposure and configuration
 
 ---
 
-### Task 2 — App metrics module + ingestion instrumentation
+### Task 2 — App metrics module + ingestion instrumentation ✅ `fce892e`
 
-**Scope.**
+**Outcome.** Shipped as planned.
 
-- `functions/metrics.py` — define the ingestion metrics from the catalogue
-  (choice 5) as module-level objects on the default registry.
-- Instrument `quake/events/ingest.py::poll_once`: time the fetch→parse→upsert
-  block into `usgs_poll_seconds`; on the success path inc
-  `events_inserted_total` / `events_updated_total` / `events_revisions_total` by
-  the `IngestionResult` counts; on the except path inc `usgs_poll_errors_total`
-  (and still re-raise). The lock-skip early return increments nothing.
-- Tests: extend `tests/unit/test_ingest.py` (existing mock-client pattern) to
-  assert counter deltas after a successful poll, an error poll, and a lock-skip;
-  `tests/unit/test_metrics.py` for the module's metric registration. Read values
-  via `prometheus_client.REGISTRY.get_sample_value(...)` and assert **deltas**
-  (counters are process-global).
+- `functions/metrics.py` — the catalogue metrics as module-level objects on the
+  default registry (UPPER_SNAKE constants, matching `celery_metrics`):
+  `USGS_POLL_SECONDS` (Histogram) + `USGS_POLL_ERRORS_TOTAL`,
+  `EVENTS_INSERTED_TOTAL`, `EVENTS_UPDATED_TOTAL`, `EVENTS_REVISIONS_TOTAL`
+  (Counters). Counters carry the `_total` suffix in their name — verified that
+  `prometheus_client` then exposes the sample as exactly `events_inserted_total`
+  (matching the catalogue and the existing `celery_task_total`).
+- `quake/events/ingest.py::poll_once` — the inner fetch→parse→upsert→count block
+  now runs inside `with USGS_POLL_SECONDS.time()`; the except path increments
+  `USGS_POLL_ERRORS_TOTAL` then re-raises unchanged; the success path increments
+  the three `events_*_total` counters from the `IngestionResult` counts. The
+  lock-skip early return is untouched (increments nothing).
+- `tests/unit/test_metrics.py` — asserts catalogue samples register on `REGISTRY`
+  and the objects have the expected `Counter`/`Histogram` types.
+- `tests/unit/test_ingest.py` — added a `_metric_snapshot()` helper (reads via
+  `REGISTRY.get_sample_value`) and three **delta** tests: successful poll, error
+  poll, lock-skip.
 
-**Acceptance.** `make check` + `make test` clean.
+**Decision recorded (within scope, no deviation).** `USGS_POLL_SECONDS.time()`
+observes on context-exit whether the block completes or raises, so a *failed*
+poll is still timed (`usgs_poll_seconds_count` += 1 alongside the error counter);
+the error test pins this. Consequence for Task 4: the `histogram_quantile` poll-
+duration panel mixes success and failure latency — intended (a slow timeout is
+worth seeing), but noted so the dashboard query/labelling reflects it.
 
-**Commit message (proposed).**
+**Verification.** `make check` clean (isort, black, flake8, mypy [100 files],
+bandit, pyright). `make test` green — 213 unit (+5 new) + 4 integration.
+
+**Commit message (as committed).**
 
 ```
-feat(observability): ingestion metrics on poll_once
-
-functions/metrics.py defines usgs_poll_seconds, usgs_poll_errors_total
-and events_{inserted,updated,revisions}_total; poll_once observes poll
-duration and increments the counters from IngestionResult (errors on
-the except path, nothing on a lock-skip).
+feat(metrics): add Prometheus metrics for USGS polling and corresponding unit tests
 ```
 
 ---
