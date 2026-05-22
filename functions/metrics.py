@@ -6,18 +6,21 @@ is the only registration step (same pattern as :mod:`functions.celery_metrics`).
 The ingestion counters/histogram below are incremented inside
 :func:`quake.events.ingest.poll_once`, which runs in the Celery worker — so they
 surface on the worker's ``:8001/metrics`` exporter (Task 1). The
-``sse_connections_active`` gauge added later in this epic is incremented in the
-API process and surfaces on the API's ``:8000/metrics`` instead.
+``sse_connections_active`` gauge is incremented in the API process (the
+subscriber registry) and surfaces on the API's ``:8000/metrics`` instead; both
+processes register all of these, so a dashboard ``sum()`` across instances
+aggregates cleanly even though each metric is only ever moved by one process.
 
 Names match the Epic-8 catalogue. ``prometheus_client`` derives sample names by
 convention: a ``Counter`` named ``events_inserted_total`` exposes the
 ``events_inserted_total`` sample; a ``Histogram`` named ``usgs_poll_seconds``
-exposes ``usgs_poll_seconds_count`` / ``_sum`` / ``_bucket``.
+exposes ``usgs_poll_seconds_count`` / ``_sum`` / ``_bucket``; a ``Gauge`` exposes
+its bare name.
 """
 
 from __future__ import annotations
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 USGS_POLL_SECONDS = Histogram(
     "usgs_poll_seconds",
@@ -42,4 +45,9 @@ EVENTS_UPDATED_TOTAL = Counter(
 EVENTS_REVISIONS_TOTAL = Counter(
     "events_revisions_total",
     "Event revisions written by the DB trigger, summed across all poll cycles.",
+)
+
+SSE_CONNECTIONS_ACTIVE = Gauge(
+    "sse_connections_active",
+    "Currently-connected SSE alert subscribers (incremented/decremented by the registry).",
 )
