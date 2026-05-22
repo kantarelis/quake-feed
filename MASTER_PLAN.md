@@ -1,6 +1,6 @@
 # MASTER_PLAN.md — quake-feed
 
-Epic-level roadmap for the project. Each epic, when it becomes the active one, gets its own `PLAN.md` at the repo root that breaks it into PR-sized steps. `PLAN.md` is gitignored — it's a local working doc between Claude and the user.
+Epic-level roadmap for the project. Each epic, when it becomes the active one, gets its own `PLAN.md` at the repo root that breaks it into PR-sized steps. `PLAN.md` is **tracked in git** — it's the permanent planned-vs-shipped record for the active epic, archived to [`docs/history/`](docs/history/) when the epic closes.
 
 ---
 
@@ -13,7 +13,7 @@ The workflow exists so the user retains **100% ownership** of every commit. Full
 3. **One task at a time.** Only when the user explicitly prompts for a task ("proceed with task N") does Claude implement it. Claude runs `make check` + `make test`, then stops with a summary and a proposed commit message. The user reviews, commits, and pushes.
 4. **Claude never runs state-changing git commands** (no `add`, `commit`, `push`, `reset`, `checkout`, `branch`, etc.). Read-only (`status`, `diff`, `log`, `show`, `blame`) is fine for situational awareness.
 5. **`PLAN.md` updated on request** after each pushed commit — progress table + outcome record.
-6. **Epic complete** → mark `✅ Done` here with the commit range, delete (or archive) the per-epic `PLAN.md`.
+6. **Epic complete** → mark `✅ Done` here with the commit range, archive the per-epic `PLAN.md` to [`docs/history/epic-NN-<slug>.md`](docs/history/) in a single rename commit.
 
 **Status legend:** `⬜ Not started` · `🟡 In progress` · `✅ Done` · `⏸ Deferred`
 
@@ -29,8 +29,8 @@ The workflow exists so the user retains **100% ownership** of every commit. Full
 | 4 | Read API (events endpoints) | ✅ Done | `EventResponse` DTO + `EventsQuery` validators + `EventsETL.query()` combined-filter SQL + `EventsManager` mounting `/events/recent` and `/events` (with `near=lat,lon`, `radius_km`, `min_magnitude`, `since`, `limit`) + `MainManager` `/metrics` + `/env` + end-to-end integration smoke. Commits `b43d8cb..7dc8c5c`. |
 | 5 | API-key auth + admin surface | ✅ Done | `Authenticate` dependency (`Authorization: Bearer <key>` → DB hash lookup → Vault raw cross-check → scope gate) + `make issue-api-key` / `make revoke-api-key` + Vault `secret/api-keys/<id>` layout + `docs/vault.md` + retrofitted `/events*` (any key) + `EndpointLocksETL` + `INGESTION_LOCK` gating in `poll_usgs` + `/admin/locks` (GET/POST/DELETE) + `/admin/ingest/{trigger,status}` (admin-scoped) + end-to-end integration smoke. Commits `fc58537..38bbee7`. |
 | 6 | SSE alerts (`/alerts/stream`) | ✅ Done | `models/alerts.py` DTOs + `FilterMatcher` + in-process `SubscriberRegistry` + Postgres LISTEN/NOTIFY on a `quake.events` INSERT trigger → lifespan-managed `AlertListener` + `/alerts/filters` per-key CRUD + `/alerts/stream` SSE (`sse-starlette`) + `docs/alerts.md` + end-to-end integration smoke. Commits `a634e70..0f37d23`. Plan archived to `docs/history/epic-06-sse-alerts.md`. |
-| 7 | Frontend (React + Vite + TypeScript + Leaflet) | ✅ Done | Vite 6 + React 19 + TS scaffold + Tailwind v4 + ESLint/Prettier/tsc/Vitest gate + CI job; hermetic `openapi-typescript` client (`schema.d.ts`) + localStorage key store + typed `fetch` wrapper + dev proxy; app shell (`react-router`, key context, Settings + `RequireApiKey` gate); recent-events timeline (`useRecentEvents`); alert-config form (`useFilters` + bbox-XOR-center+radius client validation); live Leaflet map (OSM tiles + SSE via `@microsoft/fetch-event-source`); FastAPI serves the built SPA at `/` with an index.html catch-all via a multi-stage Dockerfile + `docs/frontend.md`. Tasks 1–6 commits `965b3c6..445d3bb`; Task 7 (SPA serving + multi-stage Docker + docs) and the `make issue/revoke-api-key` exec fix pending commit. Plan archive to `docs/history/epic-07-frontend.md` pending. |
-| 8 | Observability (Prometheus metrics + Grafana dashboard) | ⬜ Not started | Ingestion success/latency metrics, provisioned dashboard. |
+| 7 | Frontend (React + Vite + TypeScript + Leaflet) | ✅ Done | Vite 6 + React 19 + TS scaffold + Tailwind v4 + ESLint/Prettier/tsc/Vitest gate + CI job; hermetic `openapi-typescript` client (`schema.d.ts`) + localStorage key store + typed `fetch` wrapper + dev proxy; app shell (`react-router`, key context, Settings + `RequireApiKey` gate); recent-events timeline (`useRecentEvents`); alert-config form (`useFilters` + bbox-XOR-center+radius client validation); live Leaflet map (OSM tiles + SSE via `@microsoft/fetch-event-source`); FastAPI serves the built SPA at `/` with an index.html catch-all via a multi-stage Dockerfile + `docs/frontend.md`. Tasks 1–7 commits `965b3c6..35548e2`, merged via PR #7 (`f8191b3`); Task 7 added SPA serving + multi-stage Dockerfile + `docs/frontend.md` + the `make issue/revoke-api-key` exec fix. Epic-7 `PLAN.md` was removed in `35548e2` (not archived to `docs/history/`). |
+| 8 | Observability (Prometheus metrics + Grafana dashboard) | 🟡 In progress | Worker `:8001` metrics endpoint (`worker_init` + threads pool) + ingestion/SSE metrics + provisioned Grafana dashboard w/ Loki panel. `PLAN.md` drafted (5 tasks, committed `8a58865`), in review. |
 | 9 | Documentation polish + architecture diagram + demo GIF | ⬜ Not started | README finalization; `docs/architecture.md`. |
 
 > Final publication (pinning the repo on GitHub, any external listing) is a user action, not a Claude task — intentionally not an epic here.
