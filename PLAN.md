@@ -20,8 +20,8 @@ Active epic from [`MASTER_PLAN.md`](MASTER_PLAN.md). Branch: `polish-documentati
 
 | # | Task | Status | Commit |
 |---|------|--------|--------|
-| 1 | `docs/database-migrations.md` — dbmate deep-dive | ⬜ Not started | — |
-| 2 | `docs/task-scheduler.md` — Celery + RabbitMQ + Beat deep-dive | ⬜ Not started | — |
+| 1 | `docs/database-migrations.md` — dbmate deep-dive | ✅ Done | `db54b31` |
+| 2 | `docs/task-scheduler.md` — Celery + RabbitMQ + Beat deep-dive | ✅ Done | `d4e64cd` |
 | 3 | `docs/architecture.md` — Mermaid diagram + data-flow walkthrough | ⬜ Not started | — |
 | 4 | Polish + connect existing docs (`vault.md`, `alerts.md`, orphaned `frontend.md`) | ⬜ Not started | — |
 | 5 | README content polish + demo GIF embed + `docs/assets/` | ⬜ Not started | — |
@@ -31,49 +31,23 @@ Active epic from [`MASTER_PLAN.md`](MASTER_PLAN.md). Branch: `polish-documentati
 
 ---
 
-## Task 1 — `docs/database-migrations.md`
+## Task 1 — `docs/database-migrations.md` ✅ `db54b31`
 
-Author the missing dbmate deep-dive that README ("Full workflow in …") and CLAUDE.md's subsystems table both link to.
+**Outcome.** Authored `docs/database-migrations.md` in the house doc style (H1 title + "this document covers (a)…(e)" intro). Content was sourced by reading `makefile`, `database/.dbmate.yml`, both migration files, and `_pretty_schema.py` — not from memory. Covers: file layout + the two current migrations as templates; authoring (`dbmate new`, up/down markers, idempotency guards); the three Make targets with exact behavior (`db-migrate` → `.env`→`DATABASE_URL`→`dbmate up` on `:5432`; `migrate-test` → throwaway `:5433`, up→down→up, EXIT-trap cleanup, CI gate; `db-schema` → `dbmate dump` + `_pretty_schema.py`, gitignored output); and the `--migrations-table public.schema_migrations` quirk with the real `relation "quake.schema_migrations" does not exist` failure and why `.dbmate.yml` isn't auto-loaded. One of the three dead doc links is now live. `make check` + `make test` green (231 unit + 4 integration; no Python touched).
 
-**Scope (files):**
-- `docs/database-migrations.md` (new).
-
-**Content (sourced from `makefile`, `database/.dbmate.yml`, `database/migrations/`, and the "Database Migrations" section of `CLAUDE.md`):**
-- Why dbmate is the single source of truth; forward-only versioned migrations under `database/migrations/`.
-- Authoring a migration (`dbmate new …`), the `migrate:up` / `migrate:down` halves, `IF [NOT] EXISTS` idempotency guards.
-- The `--migrations-table public.schema_migrations` quirk and *why* it's required (search_path / `quake` schema baseline).
-- `make db-migrate`, `make migrate-test` (sandbox cold-start + rollback + re-apply on port 5433), `make db-schema` (gitignored dump for inspection).
-- Drift detection workflow and the `_pretty_schema.py` helper's role.
-
-**Acceptance criteria:**
-- File exists; every `make` target and CLI flag it mentions matches the actual `makefile` / config (verified by reading them, not from memory).
-- No dead relative links; cross-links to `docs/architecture.md` (created in Task 3) use the correct path.
-- README + CLAUDE.md links to this file now resolve.
-
-**Checks:** `make check` + `make test` pass (no Python touched).
+**Deviations.**
+- Clarified the **host-vs-Docker** split that neither CLAUDE.md nor README spell out: `dbmate new` stamps a file (host binary or by-hand pattern), while the Make targets run the pinned `amacneil/dbmate:latest` image. Not in the original task bullets but necessary for accuracy.
+- The "Related" block links `docs/architecture.md`, which doesn't exist until Task 3 — an intentional within-branch dead link that resolves by epic end (anticipated in the original acceptance criteria).
 
 ---
 
-## Task 2 — `docs/task-scheduler.md`
+## Task 2 — `docs/task-scheduler.md` ✅ `d4e64cd`
 
-Author the missing Celery + RabbitMQ + Beat deep-dive linked from README and CLAUDE.md.
+**Outcome.** Authored `docs/task-scheduler.md` in the same style. Sourced from `config.py`, `quake/tasks.py`, `functions/scheduler.py`, `functions/celery_metrics.py`, `docker-compose.yml`, and `.env.template`. Covers: the three processes (`celery_beat`/`celery_worker`/`rabbitmq`) with exact compose commands and the `--pool=threads` rationale (cross-linked to observability, not restated); Celery app config (`BROKER_URL` shape, `task_acks_late`, `worker_prefetch_multiplier=1`, UTC, **no result backend**); both registered tasks in a table (`poll_usgs` Beat-60s `bind=True, max_retries=0` and why retries are off; `health_check` on-demand, not scheduled); the Beat schedule verbatim (single `60.0` interval); the `INGESTION_LOCK` kill-switch path through `poll_once` (records a *skipped* run, no USGS hit); and local observation (RabbitMQ UI `:15672`, worker metrics `:8001` via the `worker_init` hook, `ingestion_runs` log, manual trigger). Second dead link now live. `make check` + `make test` green.
 
-**Scope (files):**
-- `docs/task-scheduler.md` (new).
-
-**Content (sourced from `config.py`, `quake/tasks.py`, `functions/scheduler.py`, `docker-compose.yml`):**
-- The Celery app instance (`from config import celery_app`); RabbitMQ as broker; worker / beat / backend sharing one image.
-- The Beat schedule: `poll_usgs` every 60s, `health_check`, and any maintenance tasks actually present.
-- `poll_usgs` flow at a high level (fetch → upsert → `ingestion_runs` row → revision-on-change) with a pointer to the ingestion code, and the `INGESTION_LOCK` kill-switch gate.
-- Worker pool note: `--pool=threads` + `WORKER_METRICS_PORT` and *why* (cross-link to `docs/observability.md`'s metrics-topology decision rather than restating it).
-- How to run/observe: relevant `make` targets, RabbitMQ management UI URL.
-
-**Acceptance criteria:**
-- Task names, schedule intervals, and the broker/queue details match `quake/tasks.py` + `config.py` exactly.
-- Cross-links (`docs/observability.md`, `docs/architecture.md`) resolve.
-- README + CLAUDE.md links to this file now resolve.
-
-**Checks:** `make check` + `make test` pass.
+**Deviations.**
+- `functions/scheduler.py::crontab_or_default` is **defined but unused** (the live schedule uses a plain `60.0`). Documented honestly as an available helper for future cron-style entries rather than implying it's wired in — avoids documenting dead code as active.
+- Same intentional within-branch `architecture.md` cross-link as Task 1.
 
 ---
 
