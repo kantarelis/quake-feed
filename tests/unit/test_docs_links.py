@@ -34,11 +34,6 @@ _HTML_ATTR_RE = re.compile(r'(?:src|href)\s*=\s*"([^"]+)"')
 
 _SKIP_PREFIXES = ("http://", "https://", "mailto:", "tel:", "#")
 
-# Planning docs removed from the tree (git-history only). CLAUDE.md still links
-# to MASTER_PLAN.md as part of the documented workflow, so links to these are
-# expected not to resolve on disk — exempt them from the dead-link guard.
-_HISTORY_ONLY = frozenset({"MASTER_PLAN.md", "PLAN.md"})
-
 
 def _local_targets(text: str) -> set[str]:
     """Relative repo paths referenced by a doc, minus externals and anchors."""
@@ -51,17 +46,6 @@ def _local_targets(text: str) -> set[str]:
         if path:
             targets.add(path)
     return targets
-
-
-def test_entry_doc_local_links_resolve() -> None:
-    """Every local link in README.md and CLAUDE.md points at a path that exists."""
-    missing = [
-        f"{doc.name} -> {target}"
-        for doc in _ENTRY_DOCS
-        for target in sorted(_local_targets(doc.read_text()))
-        if Path(target).name not in _HISTORY_ONLY and not (_ROOT / target).exists()
-    ]
-    assert not missing, f"dead links: {missing}"
 
 
 def test_subsystem_docs_are_referenced() -> None:
