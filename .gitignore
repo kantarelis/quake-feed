@@ -82,6 +82,14 @@ yarn-error.log*
 docker-compose.override.yml
 
 # ---------------------------------------------------------------------------
+# Demo assets — keep heavy recording masters out of git; the committed,
+# README-embedded artifact is docs/assets/demo.gif only.
+# ---------------------------------------------------------------------------
+docs/assets/*.mp4
+docs/assets/*.mov
+docs/assets/*.webm
+
+# ---------------------------------------------------------------------------
 # Editor / OS
 # ---------------------------------------------------------------------------
 .idea/

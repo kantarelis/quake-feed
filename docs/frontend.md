@@ -139,3 +139,9 @@ make frontend-test    # vitest run (unit + component tests)
 Both run in the `frontend` CI job. Component tests use React Testing Library +
 jsdom; Leaflet is mocked in tests (it needs real DOM geometry), and the real
 bundle is exercised by `make frontend-build`.
+
+## Related
+
+- [`docs/architecture.md`](architecture.md) — where the SPA sits in the overall system.
+- [`docs/alerts.md`](alerts.md) — the SSE pipeline the live map subscribes to.
+- [`docs/vault.md`](vault.md) — the API-key model the dashboard authenticates with.

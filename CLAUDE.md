@@ -301,6 +301,8 @@ Run `make migrate-test` — spins up a throwaway TimescaleDB on port 5433, appli
 | Task scheduler (Celery + RabbitMQ + Beat) | [`docs/task-scheduler.md`](docs/task-scheduler.md) |
 | Alerts SSE (in-process pub/sub, filter matcher) | [`docs/alerts.md`](docs/alerts.md) |
 | Architecture diagram and data flow | [`docs/architecture.md`](docs/architecture.md) |
+| Observability (Prometheus metrics, Grafana dashboard, Loki logs) | [`docs/observability.md`](docs/observability.md) |
+| Frontend dashboard (React + Vite + Leaflet) | [`docs/frontend.md`](docs/frontend.md) |
 
 ## Tech Stack
 
