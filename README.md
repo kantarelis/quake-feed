@@ -45,13 +45,6 @@ All services are orchestrated via `docker-compose`; development utilities are ma
 
 ## 🎬 Demo
 
-<!--
-  demo.gif is recorded by hand and committed — it is NOT produced by the build,
-  so this embed is a broken link until the file exists. Record it before
-  publishing the repo; see docs/assets/RECORDING.md for the exact capture +
-  ffmpeg-palette commands.
--->
-
 <p align="center">
   <img
     src="docs/assets/demo.gif"
@@ -60,7 +53,7 @@ All services are orchestrated via `docker-compose`; development utilities are ma
   />
 </p>
 
-The dashboard subscribing to `/alerts/stream`: a new USGS event is ingested, matched against the active filter, and pushed to the browser — the marker drops on the map in real time. How the clip is produced: [`docs/assets/RECORDING.md`](docs/assets/RECORDING.md).
+The dashboard subscribing to `/alerts/stream`: a new USGS event is ingested, matched against the active filter, and pushed to the browser — the marker drops on the map in real time.
 
 
 <a id="project-structure"></a>

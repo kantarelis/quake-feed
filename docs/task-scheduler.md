@@ -113,7 +113,9 @@ stack; `make logs` tails them. Things to watch:
   Per-task `celery_task_total` / `celery_task_duration_seconds` plus the
   ingestion metrics are published there. See [`docs/observability.md`](observability.md).
 - **Ingestion log** — every poll (including skipped ones) lands a row in
-  `quake.ingestion_runs`, which drives the Grafana ingestion dashboard.
+  `quake.ingestion_runs`, the durable audit log behind `/admin/ingest/status`.
+  (The Grafana ingestion dashboard itself is metric-driven via Prometheus, not a
+  query on this table — see [`docs/observability.md`](observability.md).)
 - **Manual trigger** — the admin ingest endpoint can run a poll out of band
   (`/admin/ingest/trigger`) without waiting for Beat.
 
