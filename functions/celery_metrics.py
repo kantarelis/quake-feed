@@ -1,8 +1,10 @@
 """Prometheus instrumentation for Celery task lifecycle.
 
 Importing this module registers signal handlers on the global Celery
-dispatcher. The metrics surface is intentionally small at this stage; Epic 8
-(observability) extends it with per-task latency buckets and richer labels.
+dispatcher: per-task counters/latency on ``task_prerun``/``task_postrun``, plus
+a ``worker_init`` hook that starts the worker's Prometheus HTTP exporter. The
+module must therefore be imported in the worker boot path (``config.py``) as
+well as in the API process.
 """
 
 from __future__ import annotations
@@ -10,8 +12,10 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from celery.signals import task_failure, task_postrun, task_prerun
-from prometheus_client import Counter, Histogram
+from celery.signals import task_failure, task_postrun, task_prerun, worker_init
+from prometheus_client import Counter, Histogram, start_http_server
+
+from functions.environment import get_environmental_variables
 
 CELERY_TASK_TOTAL = Counter(
     "celery_task_total",
@@ -49,3 +53,19 @@ def _on_task_failure(task_id: str = "", sender: Any = None, **_: Any) -> None:
     # increment happens there. This handler is kept as a future hook point for
     # alerting / structured error enrichment (Epic 8).
     return None
+
+
+@worker_init.connect
+def _start_metrics_server(**_: Any) -> None:
+    """Serve this worker's Prometheus registry over HTTP.
+
+    Wired to ``worker_init`` so it runs once, in the worker's main process.
+    Under the ``--pool=threads`` worker pool there is a single OS process, so
+    task execution and this HTTP exporter share one registry — the
+    ``celery_task_*`` counters above (and the ingestion metrics added later in
+    this epic) are exposed here. The API process imports this module for the
+    metric *definitions* but never emits ``worker_init``, so it never binds
+    the port.
+    """
+    port = get_environmental_variables().worker.metrics_port
+    start_http_server(port)

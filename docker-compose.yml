@@ -29,7 +29,11 @@ services:
   celery_worker:
     image: quake-feed:latest
     container_name: quake_celery_worker
-    command: celery -A config.celery_app worker --loglevel=info
+    # --pool=threads keeps task execution and the Prometheus HTTP exporter in a
+    # single OS process so they share one metrics registry (see
+    # functions/celery_metrics.py). The exporter binds WORKER_METRICS_PORT;
+    # prometheus scrapes it over the compose network as celery_worker:8001.
+    command: celery -A config.celery_app worker --loglevel=info --pool=threads
     env_file: .env
     depends_on:
       - rabbitmq

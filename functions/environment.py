@@ -30,6 +30,10 @@ class BackendConfig(BaseModel):
     port: int
 
 
+class WorkerConfig(BaseModel):
+    metrics_port: int
+
+
 class DatabaseConfig(BaseModel):
     username: str
     password: str
@@ -85,6 +89,7 @@ class EnvironmentalVariables(BaseModel):
     environment: Environment
     application_name: str
     backend: BackendConfig
+    worker: WorkerConfig
     database: DatabaseConfig
     logger: LoggerConfig
     prometheus: PrometheusConfig
@@ -109,6 +114,11 @@ def _load_from_env() -> dict[str, Any]:
         "backend": {
             "host": _require("QUAKE_HOST_IP"),
             "port": _require("QUAKE_BIND_PORT"),
+        },
+        "worker": {
+            # Optional with a default so the API/test envs need not set it; the
+            # worker's Prometheus exporter binds this port (see prometheus.yml).
+            "metrics_port": os.environ.get("WORKER_METRICS_PORT", "8001"),
         },
         "database": {
             "username": _require("DB_USERNAME"),
