@@ -14,7 +14,10 @@ Two directions are checked:
   (orphan guard — ``docs/frontend.md`` was orphaned before Epic 9 Task 4).
 
 External (``http``/``https``/``mailto``) links and in-page ``#`` anchors are out
-of scope.
+of scope, as are links to the planning docs (``MASTER_PLAN.md`` / ``PLAN.md``):
+those were removed from the tree and live only in git history, while ``CLAUDE.md``
+still documents the workflow that names them — so a link to either is expected
+*not* to resolve on disk.
 """
 
 from __future__ import annotations
@@ -30,6 +33,11 @@ _MD_LINK_RE = re.compile(r"\]\(([^)\s]+)")
 _HTML_ATTR_RE = re.compile(r'(?:src|href)\s*=\s*"([^"]+)"')
 
 _SKIP_PREFIXES = ("http://", "https://", "mailto:", "tel:", "#")
+
+# Planning docs removed from the tree (git-history only). CLAUDE.md still links
+# to MASTER_PLAN.md as part of the documented workflow, so links to these are
+# expected not to resolve on disk — exempt them from the dead-link guard.
+_HISTORY_ONLY = frozenset({"MASTER_PLAN.md", "PLAN.md"})
 
 
 def _local_targets(text: str) -> set[str]:
@@ -51,7 +59,7 @@ def test_entry_doc_local_links_resolve() -> None:
         f"{doc.name} -> {target}"
         for doc in _ENTRY_DOCS
         for target in sorted(_local_targets(doc.read_text()))
-        if not (_ROOT / target).exists()
+        if Path(target).name not in _HISTORY_ONLY and not (_ROOT / target).exists()
     ]
     assert not missing, f"dead links: {missing}"
 
