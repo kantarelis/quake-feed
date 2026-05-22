@@ -161,6 +161,27 @@ prune: ## Reclaim disk: prune stopped containers, unused networks, dangling imag
 reset: full-clean build up ## Nuke everything, rebuild the image, bring the stack back up
 
 # ===========================================================================
+# Observability
+# Two scrape targets: the API on :8000 and the Celery worker on :8001 (see
+# docs/observability.md). The worker port is internal-only, so `metrics`
+# fetches both from inside the compose network via the backend container.
+# ===========================================================================
+
+.PHONY: metrics
+metrics: ## Print the custom Prometheus metrics from the API + worker, plus the UI URLs
+	@echo "── API metrics (backend:8000) ─────────────────────"
+	@$(COMPOSE) exec -T backend python -c \
+		"import urllib.request as u; print(u.urlopen('http://backend:8000/metrics').read().decode())" \
+		| grep -E '^(usgs_|events_|sse_|celery_)' || true
+	@echo "── Worker metrics (celery_worker:8001) ────────────"
+	@$(COMPOSE) exec -T backend python -c \
+		"import urllib.request as u; print(u.urlopen('http://celery_worker:8001/metrics').read().decode())" \
+		| grep -E '^(usgs_|events_|sse_|celery_)' || true
+	@echo "── UIs ────────────────────────────────────────────"
+	@echo "Prometheus targets : http://localhost:9090/targets"
+	@echo "Grafana            : http://localhost:3000  (dashboard: Quake-feed — Ingestion & Stream Health)"
+
+# ===========================================================================
 # Vault (dev-mode container)
 # `vault server -dev` auto-initializes/unseals, so init/unseal/seal are no-ops
 # in the current compose setup. The targets exist so the operator interface
