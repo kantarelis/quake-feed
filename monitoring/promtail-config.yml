@@ -1,0 +1,38 @@
+# Promtail: ship app container stdout to Loki.
+#
+# Discovers containers through the Docker API (docker_sd_configs; the socket is
+# mounted read-only in docker-compose.yml), keeps only the three app services
+# that emit our structured JSON logs, and labels their streams job="quake-feed"
+# — matching the Grafana dashboard's `{job="quake-feed"} | json` panel query.
+# Infra containers (db, rabbitmq, vault, prometheus, grafana, loki, promtail)
+# are dropped so the app stream stays clean and `| json` always parses.
+
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: quake_app_containers
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 5s
+    relabel_configs:
+      # Keep only our app services (same image, JSON-logging Python code).
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        regex: "(backend|celery_worker|celery_beat)"
+        action: keep
+      # Static stream label the dashboard's Loki panel queries on.
+      - target_label: "job"
+        replacement: "quake-feed"
+      # Per-service + per-container labels for filtering within the stream.
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        target_label: "service"
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/?(.*)"
+        target_label: "container"

@@ -124,6 +124,20 @@ services:
     networks:
       - quake_platform
 
+  promtail:
+    image: grafana/promtail:3.2.0
+    container_name: quake_promtail
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./monitoring/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      # Read-only socket: promtail discovers + tails app containers via the
+      # Docker API and pushes their logs to Loki (see promtail-config.yml).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      - loki
+    networks:
+      - quake_platform
+
   grafana:
     image: grafana/grafana:11.3.0
     container_name: quake_grafana
