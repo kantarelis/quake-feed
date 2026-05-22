@@ -1,6 +1,6 @@
 # PLAN.md — Epic 8: Observability (Prometheus metrics + Grafana dashboard)
 
-**Status:** 🟡 In progress — Tasks 1–2 done (`9147ecd`, `fce892e`); Task 3 complete (commit pending); Tasks 4–5 pending
+**Status:** 🟡 In progress — Tasks 1–3 done (`9147ecd`, `fce892e`, `96b439d`); Tasks 4–5 pending
 **Epic source:** [`MASTER_PLAN.md`](MASTER_PLAN.md) — Epic 8
 **Branch:** new feature branch off `kantarelis` (PRs target `kantarelis`)
 
@@ -145,7 +145,7 @@ wait for the user before starting the next.
 |---|------|--------------------------|--------|
 | 1 | Worker metrics exposition — `start_http_server(:8001)` via `worker_init` + threads pool, so the worker registry (celery + future ingestion metrics) is actually scraped | `functions/celery_metrics.py` (mod), `functions/environment.py` (mod), `.env.template` (mod), `docker-compose.yml` (mod), `config.py` (mod, +1 deviation), `tests/unit/test_celery_metrics.py` | ✅ `9147ecd` |
 | 2 | App metrics module + ingestion instrumentation (`usgs_poll_seconds`, `usgs_poll_errors_total`, `events_{inserted,updated,revisions}_total`) wired into `poll_once` | `functions/metrics.py`, `quake/events/ingest.py` (mod), `tests/unit/test_metrics.py`, `tests/unit/test_ingest.py` (mod) | ✅ `fce892e` |
-| 3 | `sse_connections_active` gauge wired into the subscriber registry, exposed on the API `/metrics` | `functions/metrics.py` (mod), `quake/alerts/registry.py` (mod), `tests/unit/test_subscriber_registry.py` (mod) | ✅ commit pending |
+| 3 | `sse_connections_active` gauge wired into the subscriber registry, exposed on the API `/metrics` | `functions/metrics.py` (mod), `quake/alerts/registry.py` (mod), `tests/unit/test_subscriber_registry.py` (mod) | ✅ `96b439d` |
 | 4 | Grafana ingestion-health dashboard (provisioned JSON) incl. a Loki logs panel | `monitoring/grafana/dashboards/ingestion.json`, `tests/unit/test_dashboard_provisioning.py` | ⬜ |
 | 5 | `docs/observability.md` + env/makefile polish (`make metrics`, Grafana hint) | `docs/observability.md`, `makefile` (mod), `README.md` (mod, optional) | ⬜ |
 
@@ -240,10 +240,9 @@ feat(metrics): add Prometheus metrics for USGS polling and corresponding unit te
 
 ---
 
-### Task 3 — SSE connections gauge ✅ (commit pending)
+### Task 3 — SSE connections gauge ✅ `96b439d`
 
-**Outcome.** Shipped as planned; code complete and verified, awaiting the user's
-commit (hash to be recorded here once landed).
+**Outcome.** Shipped as planned.
 
 - `functions/metrics.py` — added `SSE_CONNECTIONS_ACTIVE` (Gauge). Docstring
   updated to note the gauge is moved only in the API process and that the
@@ -267,13 +266,10 @@ SSE lifecycle.
 **Verification.** `make check` clean (isort, black, flake8, mypy [100 files],
 bandit, pyright). `make test` green — 216 unit (+3 new) + 4 integration.
 
-**Commit message (proposed).**
+**Commit message (as committed).**
 
 ```
-feat(observability): sse_connections_active gauge
-
-SubscriberRegistry increments/decrements a gauge on subscribe/unsubscribe;
-exposed on the API /metrics for live-stream load visibility.
+feat(metrics): implement SSE connections gauge and update related tests
 ```
 
 ---
