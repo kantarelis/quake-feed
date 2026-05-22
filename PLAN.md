@@ -22,9 +22,9 @@ Active epic from [`MASTER_PLAN.md`](MASTER_PLAN.md). Branch: `polish-documentati
 |---|------|--------|--------|
 | 1 | `docs/database-migrations.md` — dbmate deep-dive | ✅ Done | `db54b31` |
 | 2 | `docs/task-scheduler.md` — Celery + RabbitMQ + Beat deep-dive | ✅ Done | `d4e64cd` |
-| 3 | `docs/architecture.md` — Mermaid diagram + data-flow walkthrough | ⬜ Not started | — |
-| 4 | Polish + connect existing docs (`vault.md`, `alerts.md`, orphaned `frontend.md`) | ⬜ Not started | — |
-| 5 | README content polish + demo GIF embed + `docs/assets/` | ⬜ Not started | — |
+| 3 | `docs/architecture.md` — Mermaid diagram + data-flow walkthrough | ✅ Done | `addc29e` |
+| 4 | Polish + connect existing docs (`vault.md`, `alerts.md`, orphaned `frontend.md`) | ✅ Done | `23c1091` |
+| 5 | README content polish + demo GIF embed + `docs/assets/` | ✅ Done | `d11a4f3` |
 | 6 | Doc-integrity test + final dead-link/screenshot sweep (epic close-out) | ⬜ Not started | — |
 
 **Status legend:** ⬜ Not started · 🟡 In progress · ✅ Done
@@ -51,62 +51,34 @@ Active epic from [`MASTER_PLAN.md`](MASTER_PLAN.md). Branch: `polish-documentati
 
 ---
 
-## Task 3 — `docs/architecture.md`
+## Task 3 — `docs/architecture.md` ✅ `addc29e`
 
-The architecture diagram + data-flow walkthrough — the keystone doc linked first in both doc tables.
+**Outcome.** Authored the keystone `docs/architecture.md`: a **Mermaid `flowchart`** component map (renders natively on GitHub) plus the three data-flow walkthroughs and a subsystem deep-dive hub. Verified the read/alert paths against code before drawing — read `quake/main.py`, `quake/alerts/listener.py`, `quake/events/ingest.py`, `quake/api/ingest/views.py`, `docker-compose.yml`, and the Grafana provisioning. The diagram edges are accurate (`AFTER INSERT · pg_notify → AlertListener`, `AFTER UPDATE → event_revisions`, admin manual trigger → RabbitMQ via `send_task`, Prometheus scraping `backend:8000` + `celery_worker:8001`). Walkthroughs: ingestion (Beat → broker → `poll_once` → lock gate → fetch/parse → upsert → triggers → run stamp), read (auth → Manager/Views → `EventsETL.query()` → `EventResponse`), alert (NOTIFY → listener → registry/matcher → SSE, single-pod note). Resolves the last of the three dead README/CLAUDE links and the within-branch `architecture.md` links from Tasks 1–2. `make check` + `make test` green.
 
-**Scope (files):**
-- `docs/architecture.md` (new).
-
-**Content:**
-- A **Mermaid** diagram (fenced ```mermaid block — GitHub renders it natively) showing: USGS feed → Celery worker (Beat 60s) → TimescaleDB; FastAPI read API + SSE; in-process pub/sub from upsert → SSE subscribers; frontend; and the side systems (Vault for secrets, Prometheus/Grafana/Loki for observability, RabbitMQ as Celery broker).
-- Three data-flow walkthroughs in prose: **ingestion path** (poll → parse → dedupe/revision → upsert → `ingestion_runs`), **read path** (`/events*` query → ETL → DTO), **alert path** (upsert → NOTIFY/in-process publish → `FilterMatcher` → `/alerts/stream`).
-- A "see also" block linking each subsystem to its deep-dive (`database-migrations.md`, `task-scheduler.md`, `vault.md`, `alerts.md`, `observability.md`, `frontend.md`).
-
-**Acceptance criteria:**
-- Mermaid block is syntactically valid (renders on GitHub); diagram matches the actual component/data flow described in `CLAUDE.md` + code.
-- All "see also" links resolve.
-- README + CLAUDE.md links to this file now resolve.
-
-**Checks:** `make check` + `make test` pass.
+**Deviations.**
+- Auth drawn as a component with its validation backends (`api_keys`, Vault) rather than an edge from every endpoint — diagram legibility; precision carried in prose.
+- **Correctness finding (logged for follow-up):** verified Grafana has only **Prometheus + Loki** datasources (no Postgres), so Task 2's phrasing that `ingestion_runs` "drives" the dashboard is misleading — the dashboard is metric-driven; `ingestion_runs` is the audit log / `/admin/ingest/status` source. `architecture.md` states this correctly; the committed `task-scheduler.md` line was left as-is (separate commit, user's call to amend).
 
 ---
 
-## Task 4 — Polish + connect existing docs
+## Task 4 — Polish + connect existing docs ✅ `23c1091`
 
-Finalize the docs written in earlier epics and connect the orphaned one, so the docs form one navigable set.
+**Outcome.** Connected and corrected the existing docs. **`vault.md`:** removed two stale `*(landing in Task 2)*` tags (Epic 5 leftovers, now misleading) and added a "Listing & pruning" section for the `make list-api-keys` / `make prune-api-keys` targets that post-dated the doc — verified against the actual makefile help strings. **`alerts.md`:** accurate as-is, added a Related footer. **`frontend.md`:** added a Related footer (no content rewrite, per spec). **`README.md` + `CLAUDE.md`:** added the orphaned `frontend.md` to both doc tables and the missing `observability.md` to the CLAUDE.md subsystems table. Verified: all 7 `docs/*.md` reachable from README/CLAUDE, every inter-doc relative link resolves, no stale "landing in Task" tags remain. `make check` + `make test` green.
 
-**Scope (files):**
-- `docs/vault.md`, `docs/alerts.md` — light accuracy/consistency pass (verify against current code; consistent headers; add cross-links to `architecture.md` and siblings).
-- `docs/frontend.md` — add a cross-link header consistent with the others (no content rewrite).
-- `README.md` + `CLAUDE.md` — add `docs/frontend.md` to the documentation / subsystems tables so it's no longer orphaned (and confirm `observability.md` is present in both — already in README, check CLAUDE.md).
-
-**Acceptance criteria:**
-- `vault.md` / `alerts.md` claims still match code (e.g. secret paths, filter semantics); any drift fixed.
-- Every doc under `docs/` is reachable from at least one of README/CLAUDE.md.
-- All cross-links resolve.
-
-**Checks:** `make check` + `make test` pass.
+**Deviations.**
+- Went slightly beyond the "light pass" spec on `vault.md` by adding the list/prune section — the API-key lifecycle the doc owns was genuinely incomplete without it.
+- Edited `CLAUDE.md` (a project-instruction file) — only the subsystems-table rows, as the spec directed.
 
 ---
 
-## Task 5 — README content polish + demo GIF
+## Task 5 — README content polish + demo GIF ✅ `d11a4f3`
 
-Make the README's headline section concrete and add the demo GIF.
+**Outcome.** Added a **🎬 Demo** TOC entry + section near the top embedding `docs/assets/demo.gif` (`<img>` at `width="820"`, descriptive alt text, an HTML comment flagging the GIF as hand-recorded). Rebuilt **"What this demonstrates"** as a 3-column table with a **"Where to look"** column pointing each role at concrete, verified paths (`quake/api/auth.py`, `quake/tasks.py` + `config.py`, `functions/vault.py`, `functions/metrics.py`, `database/migrations/`, `quake/events/ingest.py`, …). Wrote `docs/assets/RECORDING.md` with the capture recipe. The GIF was then **recorded by Spyro** (Hyprland: `wf-recorder` + `slurp`) and produced via the ffmpeg two-pass palette pipeline — including a cut removing the 0:47–0:56 segment (68s → 59s), final `demo.gif` 820×439, ~5.1 MB. `make check` + `make test` green.
 
-**Scope (files):**
-- `README.md` — flesh out "What this demonstrates" so each row points at concrete files/dirs (e.g. `quake/api/auth.py`, `database/migrations/`, `quake/alerts/`); add a "Demo" section near the top embedding the GIF.
-- `docs/assets/` (new dir) — `.gitkeep` + a short `RECORDING.md` with the exact capture commands (e.g. `peek` / `ffmpeg` / browser screen-record → optimized gif), target dimensions, and what the clip should show (live map receiving an SSE event, recent-events timeline).
-- Embed path: `docs/assets/demo.gif` (relative), with descriptive alt text and a sensible width.
-
-**Demo GIF reality:** the binary `demo.gif` is **recorded and committed by Spyro** — this task wires the markdown, the assets location, and the instructions; it does not (cannot) produce the GIF. Until the file lands the embed will show broken-image alt text, which is expected and called out in `RECORDING.md`.
-
-**Acceptance criteria:**
-- "What this demonstrates" rows reference real paths that exist in the repo.
-- README has a Demo section with the GIF embed + alt text; `docs/assets/RECORDING.md` gives reproducible capture steps.
-- No new dead links (the GIF path is documented as user-supplied).
-
-**Checks:** `make check` + `make test` pass.
+**Deviations.**
+- Dropped the planned `docs/assets/.gitkeep` — `RECORDING.md` already tracks the directory, so it would be dead weight.
+- Added `docs/assets/*.mp4|mov|webm` to `.gitignore` so the heavy 7.8 MB recording master stays local; only the embedded GIF is tracked. (Not in the original spec; the right call for repo size.)
+- The committed `RECORDING.md` still describes the OBS/x11grab/Peek approach rather than the `wf-recorder` flow that actually worked — see open item below.
 
 ---
 
@@ -129,5 +101,7 @@ Add a test that prevents doc-link rot from regressing, then do the final polish 
 
 ## Notes / open items
 
+- **`RECORDING.md` decision (open, to fold into Task 6):** now that `demo.gif` exists, `docs/assets/RECORDING.md` is no longer needed for its original purpose, and as committed it documents the wrong tools (OBS / ffmpeg x11grab / Peek) instead of the `wf-recorder` + ffmpeg-palette flow that actually worked. Pending choice: (1) remove it + drop the README "How the clip is produced" link; (2) keep it as an unadvertised maintainer note, drop the README link, and correct it to the real flow; or (3) keep + keep the link, corrected. Whichever is chosen, do it in the Task 6 commit and re-check links.
+- **Task 2 wording follow-up (minor):** `task-scheduler.md` says `ingestion_runs` "drives" the Grafana dashboard; it's actually metric-driven (Grafana has no Postgres datasource). Optional one-line amend in a follow-up; `architecture.md` already states it correctly.
 - **Epic 8 archive (carried over):** `MASTER_PLAN.md` flags the Epic 8 `PLAN.md` archive to `docs/history/epic-08-observability.md` as *pending*, but the root `PLAN.md` is already empty and `docs/history/` is empty — the Epic 8 plan content now only exists in merged PR #8 history. Recovering and archiving it (and likewise the Epic 6/7 plans the MASTER_PLAN references) is a separate user decision, not part of Epic 9. Flagged here so it isn't lost.
-- **Out of scope:** any code/behavior changes beyond the doc-integrity test; the actual GIF recording (user action); final GitHub publication / repo-pinning (explicitly a user action per MASTER_PLAN).
+- **Out of scope:** any code/behavior changes beyond the doc-integrity test; final GitHub publication / repo-pinning (explicitly a user action per MASTER_PLAN).
