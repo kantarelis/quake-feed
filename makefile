@@ -201,13 +201,19 @@ vault-seal: ## Seal Vault (requires VAULT_TOKEN in .env)
 # Issuance prints the raw key on stdout exactly once.
 # ===========================================================================
 
-.PHONY: issue-api-key revoke-api-key
+.PHONY: issue-api-key list-api-keys revoke-api-key prune-api-keys
 issue-api-key: ## Issue a new API key. Args: LABEL=<tag>, SCOPES=<comma>
 	@$(COMPOSE) exec -T backend python -m scripts.issue_api_key $(if $(LABEL),--label "$(LABEL)") $(if $(SCOPES),--scopes "$(SCOPES)")
+
+list-api-keys: ## List issued API keys (id, label, scopes, status). No raw keys.
+	@$(COMPOSE) exec -T backend python -m scripts.list_api_keys
 
 revoke-api-key: ## Revoke an API key by id. Args: KEY_ID=<id>
 	@if [ -z "$(KEY_ID)" ]; then echo "Usage: make revoke-api-key KEY_ID=<id>"; exit 1; fi
 	@$(COMPOSE) exec -T backend python -m scripts.revoke_api_key --key-id $(KEY_ID)
+
+prune-api-keys: ## Delete all revoked API keys (cascades to their filters). Active keys untouched.
+	@$(COMPOSE) exec -T backend python -m scripts.prune_api_keys
 
 # ===========================================================================
 # Database migrations (dbmate)

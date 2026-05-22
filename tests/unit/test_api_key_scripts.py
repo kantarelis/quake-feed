@@ -16,6 +16,8 @@ import pytest
 from database.etls.api_keys import ApiKeysETL
 from quake.api.auth import hash_key, vault_path
 from scripts.issue_api_key import issue
+from scripts.list_api_keys import list_keys
+from scripts.prune_api_keys import prune
 from scripts.revoke_api_key import revoke
 from tests._auth import StubVault
 
@@ -112,3 +114,55 @@ def test_revoke_unknown_id_returns_2(vault: StubVault) -> None:
     rc = revoke(key_id=999_999, vault=vault, stdout=io.StringIO(), stderr=err)
     assert rc == 2
     assert "no such key_id" in err.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# list
+# ---------------------------------------------------------------------------
+
+
+def test_list_keys_empty(vault: StubVault) -> None:
+    buf = io.StringIO()
+    assert list_keys(stdout=buf) == 0
+    assert "no API keys issued" in buf.getvalue()
+
+
+def test_list_keys_shows_ids_labels_and_status_without_raw(vault: StubVault) -> None:
+    active_id = issue(label="alice", scopes=["admin"], vault=vault, stdout=io.StringIO())
+    revoked_id = issue(label="bob", scopes=[], vault=vault, stdout=io.StringIO())
+    revoke(key_id=revoked_id, vault=vault, stdout=io.StringIO(), stderr=io.StringIO())
+
+    buf = io.StringIO()
+    assert list_keys(stdout=buf) == 0
+    text = buf.getvalue()
+
+    assert str(active_id) in text and "alice" in text and "admin" in text
+    assert "active" in text
+    assert "revoked" in text  # bob's row
+    # the raw key (qkf_...) must never appear in a listing
+    assert "qkf_" not in text
+
+
+# ---------------------------------------------------------------------------
+# prune
+# ---------------------------------------------------------------------------
+
+
+def test_prune_none_message(vault: StubVault) -> None:
+    issue(label="keep", scopes=[], vault=vault, stdout=io.StringIO())  # active only
+    buf = io.StringIO()
+    assert prune(stdout=buf) == 0
+    assert "no revoked keys to prune" in buf.getvalue()
+
+
+def test_prune_removes_only_revoked_keys(vault: StubVault) -> None:
+    active_id = issue(label="keep", scopes=[], vault=vault, stdout=io.StringIO())
+    revoked_id = issue(label="gone", scopes=[], vault=vault, stdout=io.StringIO())
+    revoke(key_id=revoked_id, vault=vault, stdout=io.StringIO(), stderr=io.StringIO())
+
+    buf = io.StringIO()
+    assert prune(stdout=buf) == 0
+    assert "pruned 1 revoked key(s)" in buf.getvalue()
+
+    assert ApiKeysETL().get_by_id(active_id) is not None
+    assert ApiKeysETL().get_by_id(revoked_id) is None

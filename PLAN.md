@@ -1,6 +1,6 @@
 # PLAN.md — Epic 8: Observability (Prometheus metrics + Grafana dashboard)
 
-**Status:** 🟡 In progress — Tasks 1–3 done (`9147ecd`, `fce892e`, `96b439d`); Task 4 implemented (commit pending); Tasks 5–6 pending (Task 5 added mid-epic — see design choice 8)
+**Status:** 🟡 In progress — Tasks 1–5 done (`9147ecd`, `fce892e`, `96b439d`, `dcf6f6c`, `f11626d`); Task 6 (docs) pending
 **Epic source:** [`MASTER_PLAN.md`](MASTER_PLAN.md) — Epic 8
 **Branch:** new feature branch off `kantarelis` (PRs target `kantarelis`)
 
@@ -151,8 +151,8 @@ wait for the user before starting the next.
 | 1 | Worker metrics exposition — `start_http_server(:8001)` via `worker_init` + threads pool, so the worker registry (celery + future ingestion metrics) is actually scraped | `functions/celery_metrics.py` (mod), `functions/environment.py` (mod), `.env.template` (mod), `docker-compose.yml` (mod), `config.py` (mod, +1 deviation), `tests/unit/test_celery_metrics.py` | ✅ `9147ecd` |
 | 2 | App metrics module + ingestion instrumentation (`usgs_poll_seconds`, `usgs_poll_errors_total`, `events_{inserted,updated,revisions}_total`) wired into `poll_once` | `functions/metrics.py`, `quake/events/ingest.py` (mod), `tests/unit/test_metrics.py`, `tests/unit/test_ingest.py` (mod) | ✅ `fce892e` |
 | 3 | `sse_connections_active` gauge wired into the subscriber registry, exposed on the API `/metrics` | `functions/metrics.py` (mod), `quake/alerts/registry.py` (mod), `tests/unit/test_subscriber_registry.py` (mod) | ✅ `96b439d` |
-| 4 | Grafana ingestion-health dashboard (provisioned JSON) incl. a Loki logs panel | `monitoring/grafana/dashboards/ingestion.json`, `tests/unit/test_dashboard_provisioning.py`, `requirements-test.txt` (mod, +1 deviation) | ⬜ |
-| 5 | Log collection → Loki: a minimal collector that ships container stdout to Loki under `job="quake-feed"` so Task 4's logs panel populates | `docker-compose.yml` (mod), `monitoring/promtail-config.yml` (new), `functions/logger.py` (docstring, mod) | ⬜ |
+| 4 | Grafana ingestion-health dashboard (provisioned JSON) incl. a Loki logs panel | `monitoring/grafana/dashboards/ingestion.json`, `tests/unit/test_dashboard_provisioning.py`, `requirements-test.txt` (mod, +1 deviation) | ✅ `dcf6f6c` |
+| 5 | Log collection → Loki: a minimal collector that ships container stdout to Loki under `job="quake-feed"` so Task 4's logs panel populates | `docker-compose.yml` (mod), `monitoring/promtail-config.yml` (new), `functions/logger.py` (docstring, mod), `tests/unit/test_log_collection.py` (new) | ✅ `f11626d` |
 | 6 | `docs/observability.md` + env/makefile polish (`make metrics`, Grafana hint) | `docs/observability.md`, `makefile` (mod), `README.md` (mod, optional) | ⬜ |
 
 ---
@@ -280,77 +280,74 @@ feat(metrics): implement SSE connections gauge and update related tests
 
 ---
 
-### Task 4 — Grafana ingestion-health dashboard
+### Task 4 — Grafana ingestion-health dashboard ✅ `dcf6f6c`
 
-**Scope.**
+**Outcome.** Shipped as planned; surfaced a scope correction (see Task 5).
 
-- `monitoring/grafana/dashboards/ingestion.json` — a provisioned dashboard with
-  panels (all `sum()`-aggregated across instances, design choice 1):
-  - poll **success vs error rate** (`rate(usgs_poll_errors_total[5m])` vs poll
-    count / `celery_task_total{task_name="quake.tasks.poll_usgs"}`),
-  - poll **duration** p50/p95 (`histogram_quantile` over `usgs_poll_seconds`),
-  - **events inserted / updated / revisions** rate,
-  - **active SSE connections** (`sse_connections_active`),
-  - a **Loki logs** panel for the app stream.
-- Panels reference the provisioned datasources by name ("Prometheus", "Loki").
-- `tests/unit/test_dashboard_provisioning.py` — load the JSON, assert it parses,
-  has the expected panel titles, and every panel's `datasource` resolves to a name
-  declared in `provisioning/datasources/datasources.yml` (guards against drift
-  between the dashboard and the provisioned datasources).
+- `monitoring/grafana/dashboards/ingestion.json` (`uid: quake-ingestion`) — five
+  panels, all `sum()`-aggregated across instances: **Poll rate & errors**, **Poll
+  duration (p50/p95)** (`histogram_quantile` over `usgs_poll_seconds_bucket`),
+  **Event ingest rate (inserted/updated/revisions)**, **Active SSE connections**
+  (stat), **Application logs** (Loki, query `{job="quake-feed"} | json`).
+  Datasources referenced by **name** (`"Prometheus"` / `"Loki"`) — Grafana 11
+  resolves string names for provisioned datasources.
+- `tests/unit/test_dashboard_provisioning.py` — three drift guards: JSON parses +
+  has uid/panels; expected panel titles present; every panel- **and** target-level
+  datasource name is declared in `datasources.yml`.
 
-**Acceptance.** `make check` + `make test` clean (JSON-validity/provisioning test).
-Manual: `make up`, open Grafana, confirm the dashboard auto-loads and panels render
-once a poll or two has run.
+**Deviation (1, minor).** Added `requirements-test.txt` (declared `PyYAML==6.0.3`):
+the drift test parses the datasource YAML, and PyYAML was only present transitively
+(via bandit) — declared explicitly rather than hand-rolling a brittle regex.
 
-**Commit message (proposed).**
+**Scope correction raised here → new Task 5.** Design choice 8 had assumed "the
+logging→Loki pipeline already exists." It didn't — `functions/logger.py` only writes
+JSON to stdout and there was **no log collector** in `docker-compose.yml`. So the
+Loki panel would render empty. Rather than ship a dead panel, a minimal collector
+was added as **Task 5** (design choice 8 updated, docs task renumbered to Task 6).
+
+**Verification.** `make check` clean (101 source files). `make test` green — 219
+unit (+3 new) + 4 integration. Manual Grafana render remains a user step.
+
+**Commit message (as committed).**
 
 ```
-feat(observability): provisioned ingestion-health Grafana dashboard
-
-monitoring/grafana/dashboards/ingestion.json charts poll rate/latency,
-event insert/update/revision rates, active SSE connections, and a Loki
-logs panel. Auto-discovered by the existing dashboard provider; a unit
-test guards datasource-name drift.
+feat(observability): add Grafana ingestion dashboard and log collection tests
 ```
 
 ---
 
-### Task 5 — Log collection → Loki
+### Task 5 — Log collection → Loki ✅ `f11626d`
 
-*Added during Task 4 review (see design choice 8 correction): the Loki panel has
-no data source until container logs actually reach Loki.*
+*Added during Task 4 review (design choice 8 correction): the Loki panel has no
+data source until container logs actually reach Loki.*
 
-**Scope.**
+**Outcome.** Shipped as planned (promtail + `docker_sd_configs`, both confirmed at
+review).
 
-- Add a minimal **promtail** service to `docker-compose.yml` (confirmed at review
-  over Grafana Alloy — smaller, self-contained config). It discovers containers via
-  `docker_sd_configs` (confirmed — docker socket mounted **read-only**) and pushes
-  to `loki:3100`.
-- `monitoring/promtail-config.yml` (new) — relabel so app containers ship with a
-  static `job="quake-feed"` stream label (matching the dashboard's
-  `{job="quake-feed"} | json` query) plus a `service`/`container` label derived
-  from the compose service name. Keep the JSON log body intact so `| json` parses
-  `level` / `logger` / `message` downstream.
-- `functions/logger.py` — update the docstring (it currently says "Epic 8 wires the
-  container-side collection") to point at the promtail service now that it exists.
-- No app/runtime behaviour change; logger still just writes JSON to stdout.
+- `docker-compose.yml` — added the `promtail` service (`grafana/promtail:3.2.0`,
+  version-matched to Loki); mounts the config and the Docker socket **read-only**;
+  `depends_on: loki`.
+- `monitoring/promtail-config.yml` (new) — `docker_sd_configs` discovery; a `keep`
+  relabel scopes collection to the three app services (`backend`, `celery_worker`,
+  `celery_beat`) so infra containers are dropped and the stream stays JSON-only;
+  stamps `job="quake-feed"` + `service`/`container` labels; pushes to `loki:3100`.
+- `functions/logger.py` — docstring corrected to point at the promtail service.
+- `tests/unit/test_log_collection.py` (new, optional per acceptance) — drift guard
+  tying promtail's `job` label to the dashboard's Loki query (rename on either side
+  fails CI), plus config-parses / pushes-to-loki checks.
 
 **Decisions (confirmed at review).** promtail (not Grafana Alloy); `docker_sd_configs`
-with the docker socket mounted **read-only** (not a static file tail).
+with the docker socket mounted **read-only** (not a static file tail). App-only
+stream (the `keep` relabel) so `{job="quake-feed"} | json` always parses.
 
-**Acceptance.** `make check` + `make test` clean (likely no Python change beyond a
-docstring; a small provisioning sanity test is optional). Manual: `make up`, run a
-poll or two, open Grafana → the dashboard's **Application logs** panel shows app
-log lines; confirm `| json` surfaces `level`/`logger`.
+**Verification.** `make check` clean (102 source files). `make test` green — 222
+unit (+3 new) + 4 integration. `docker compose config` validates the full stack
+with promtail. Manual Grafana logs-panel render remains a user step.
 
-**Commit message (proposed).**
+**Commit message (as committed).**
 
 ```
-feat(observability): ship container logs to Loki via promtail
-
-Add a promtail service that tails Docker container logs and pushes them
-to Loki under job="quake-feed", so the dashboard's logs panel populates.
-Minimal config — relabels compose services and preserves the JSON body.
+feat(observability): add Promtail configuration and tests for log collection to Loki
 ```
 
 ---

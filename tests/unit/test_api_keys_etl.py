@@ -12,6 +12,7 @@ import time
 import psycopg
 import pytest
 
+from database.etls.alert_filters import AlertFiltersETL
 from database.etls.api_keys import ApiKeysETL
 
 
@@ -96,3 +97,53 @@ def test_revoke_is_idempotent(keys: ApiKeysETL) -> None:
 
     second = keys.get_by_hash("hash-idempotent")
     assert second is not None and second.revoked_at == first_ts
+
+
+def test_list_all_empty_returns_empty_list(keys: ApiKeysETL) -> None:
+    assert keys.list_all() == []
+
+
+def test_list_all_returns_every_row_ordered_by_id(keys: ApiKeysETL) -> None:
+    first = keys.insert("hash-1", label="alpha", scopes=["read"])
+    second = keys.insert("hash-2", label=None, scopes=[])
+    keys.revoke(second)
+
+    rows = keys.list_all()
+    assert [r.id for r in rows] == [first, second]  # oldest id first
+    assert rows[0].label == "alpha"
+    assert rows[0].scopes == ["read"]
+    assert rows[0].revoked_at is None
+    assert rows[1].revoked_at is not None
+
+
+def test_delete_revoked_empty_returns_zero(keys: ApiKeysETL) -> None:
+    assert keys.delete_revoked() == 0
+
+
+def test_delete_revoked_removes_only_revoked_rows(keys: ApiKeysETL) -> None:
+    active = keys.insert("hash-active", label=None, scopes=[])
+    revoked_a = keys.insert("hash-rev-a", label=None, scopes=[])
+    revoked_b = keys.insert("hash-rev-b", label=None, scopes=[])
+    keys.revoke(revoked_a)
+    keys.revoke(revoked_b)
+
+    assert keys.delete_revoked() == 2
+    assert keys.get_by_id(active) is not None  # active survives
+    assert keys.get_by_id(revoked_a) is None
+    assert keys.get_by_id(revoked_b) is None
+
+
+def test_delete_revoked_cascades_to_alert_filters(keys: ApiKeysETL) -> None:
+    """FK ON DELETE CASCADE: pruning a revoked key removes its alert filters too."""
+    filters = AlertFiltersETL()
+    key_id = keys.insert("hash-with-filter", label=None, scopes=[])
+    filters.insert(key_id, min_magnitude=4.0)
+    keys.revoke(key_id)
+
+    assert keys.delete_revoked() == 1
+    remaining = filters._execute(
+        "SELECT id FROM quake.alert_filters WHERE api_key_id = %s",
+        (key_id,),
+        fetch="all",
+    )
+    assert remaining == []
