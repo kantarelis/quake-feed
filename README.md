@@ -226,6 +226,7 @@ Operational and architectural deep-dives live in [`docs/`](docs/):
 | Task scheduler (Celery + RabbitMQ + Beat) | [`docs/task-scheduler.md`](docs/task-scheduler.md) |
 | Alerts SSE (in-process pub/sub, filter matcher) | [`docs/alerts.md`](docs/alerts.md) |
 | Observability (Prometheus metrics, Grafana dashboard, Loki logs) | [`docs/observability.md`](docs/observability.md) |
+| Frontend dashboard (React + Vite + Leaflet) | [`docs/frontend.md`](docs/frontend.md) |
 
 
 <a id="tech-stack"></a>

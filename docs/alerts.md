@@ -271,3 +271,9 @@ curl -N http://localhost:8000/alerts/stream \
 The connection stays open; you'll see periodic ping comments and an
 `event: alert` frame each time a matching event lands. With nothing matching,
 you'll just see the keep-alive pings.
+
+## Related
+
+- [`docs/architecture.md`](architecture.md) — the alert path within the wider data flow.
+- [`docs/task-scheduler.md`](task-scheduler.md) — the worker poll whose INSERTs this stream reacts to.
+- [`docs/frontend.md`](frontend.md) — the browser-side SSE client (`@microsoft/fetch-event-source`).

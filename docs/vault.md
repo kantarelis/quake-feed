@@ -34,7 +34,7 @@ secret/
 - **No hash in Vault.** The hash is the DB's index column; Vault holds only
   the raw value.
 
-## Issuance — `make issue-api-key` *(landing in Task 2)*
+## Issuance — `make issue-api-key`
 
 ```
 make issue-api-key LABEL=alice SCOPES=admin
@@ -49,7 +49,7 @@ make issue-api-key LABEL=alice SCOPES=admin
 If step 4 fails, step 3 is rolled back so a hash never lives in the DB
 without a matching Vault entry.
 
-## Revoke — `make revoke-api-key` *(landing in Task 2)*
+## Revoke — `make revoke-api-key`
 
 ```
 make revoke-api-key KEY_ID=42
@@ -60,6 +60,18 @@ make revoke-api-key KEY_ID=42
    value is unrecoverable.
 
 Revoke is idempotent — calling it a second time is a no-op.
+
+## Listing & pruning
+
+```
+make list-api-keys      # id, label, scopes, status — never the raw key
+make prune-api-keys     # hard-delete every revoked key (cascades to its filters)
+```
+
+`list-api-keys` reads `quake.api_keys` for an at-a-glance inventory; it never
+touches Vault and never prints raw key material. `prune-api-keys` permanently
+deletes the rows of already-**revoked** keys (their `quake.alert_filters`
+cascade away); active keys are left untouched. Revoke first, prune later.
 
 ## Authentication resolution
 
@@ -107,3 +119,8 @@ Vault-only compromise is not enough to forge a working key.
 - **Raw keys leak only via stdout.** No log line, no audit row, no metric
   carries the raw value. The Vault audit log (if enabled) records the
   writes.
+
+## Related
+
+- [`docs/architecture.md`](architecture.md) — where the `Authenticate` gate sits in the request flow.
+- [`docs/frontend.md`](frontend.md) — how the SPA stores and sends the issued key.
